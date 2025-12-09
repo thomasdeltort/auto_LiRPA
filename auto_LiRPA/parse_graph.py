@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -213,6 +213,13 @@ def parse_module(module, inputs, param_exclude=".*AuxLogits.*", param_include=No
     if version.parse(torch.__version__) < version.parse("2.0.0"):
         from torch.onnx.symbolic_helper import _set_opset_version
         _set_opset_version(12)
+    if version.parse(torch.__version__) >= version.parse("2.1.0"):
+        # This is needed for BoundConcatGrad to work with torch 2.1.0 and later
+        if version.parse(torch.__version__) < version.parse("2.9.0"):
+            from torch.onnx._globals import GLOBALS
+        else:
+            from torch.onnx._internal.torchscript_exporter._globals import GLOBALS
+        GLOBALS.autograd_inlining = False
 
     logger.debug("Graph before ONNX convertion:")
     logger.debug(trace)

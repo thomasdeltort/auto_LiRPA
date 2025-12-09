@@ -5,7 +5,7 @@ import torchvision
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 from auto_LiRPA.utils import *
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE 
 
 class Test_Model(nn.Module):
     def __init__(self):
@@ -36,18 +36,19 @@ class Test_Model(nn.Module):
         return self.seq3(torch.max(self.seq1(x), self.seq2(x)))
 
 class TestMinMax(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path='data/min_max_test_data', generate=generate)
+            seed=1, ref_name='min_max_test_data', generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         self.result = []
         for conv_mode in ['patches', 'matrix']:
             for use_shared_alpha in [True, False]:
-                model = Test_Model()
+                model = Test_Model().to(device=self.default_device, dtype=self.default_dtype)
                 checkpoint = torch.load(
                     os.path.join(os.path.dirname(__file__), '../examples/vision/pretrained/test_min_max.pth'),
-                    map_location=torch.device('cpu'))
+                    map_location=self.default_device)
                 model.load_state_dict(checkpoint)
 
                 test_data = torchvision.datasets.MNIST(
@@ -56,7 +57,8 @@ class TestMinMax(TestCase):
 
                 N = 2
                 image = test_data.data[:N].view(N,1,28,28)
-                image = image.to(torch.float32) / 255.0
+                image = image.to(device=self.default_device,
+                                 dtype=self.default_dtype) / 255.0
 
                 lirpa_model = BoundedModule(model, torch.empty_like(image), device=image.device, bound_opts={"conv_mode": conv_mode})
 
@@ -66,7 +68,7 @@ class TestMinMax(TestCase):
 
                 lirpa_model.set_bound_opts({
                     'optimize_bound_args': {
-                        'iteration': 20,
+                        'iteration': 5,
                         'lr_alpha': 0.1,
                         'use_shared_alpha': use_shared_alpha,
                     }

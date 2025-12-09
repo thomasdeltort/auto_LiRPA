@@ -3,9 +3,13 @@ import random
 import torch
 from complete_verifier.tensor_storage import StackTensorStorage, QueueTensorStorage
 
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
+
 
 class TestTensorStorage(TestCase):
+    def __init__(self, methodName='runTest', device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
+        
     def test_content(self, seed=123):
         self.set_seed(seed)
         storage_classes_and_pop_behavior = [
@@ -30,7 +34,8 @@ class TestTensorStorage(TestCase):
                         random_size = random.randint(1, 100)
                         tensors = []
                         for _ in range(random_size):
-                            random_tensor = torch.randn(shape[:concat_dim] + shape[concat_dim+1:], dtype=torch.float32).unsqueeze(concat_dim)
+                            random_tensor = torch.randn(
+                                shape[:concat_dim] + shape[concat_dim+1:], device=self.default_device, dtype=self.default_dtype).unsqueeze(concat_dim)
                             tensors.append(random_tensor)
                         return torch.cat(tensors, dim=concat_dim), tensors
                     s = storage_class(full_shape=shape, initial_size=16, switching_size=65536, concat_dim=concat_dim)
@@ -61,7 +66,7 @@ class TestTensorStorage(TestCase):
                 random_size = random.randint(1, 100)
                 tensors = []
                 for _ in range(random_size):
-                    random_tensor = torch.randn(shape[:concat_dim] + shape[concat_dim+1:], dtype=torch.float32).unsqueeze(concat_dim)
+                    random_tensor = torch.randn(shape[:concat_dim] + shape[concat_dim+1:], dtype=self.default_dtype).unsqueeze(concat_dim)
                     tensors.append(random_tensor)
                 return torch.cat(tensors, dim=concat_dim), tensors
             s = QueueTensorStorage(full_shape=shape, initial_size=16, switching_size=16, concat_dim=concat_dim)
@@ -84,7 +89,8 @@ class TestTensorStorage(TestCase):
             shape[concat_dim] = -1 # does no matter.
             zero_shape = shape.copy()
             zero_shape[concat_dim] = 0
-            make_tensor = lambda x: torch.arange(1,x+1, dtype=torch.float32).view(*shape)
+            def make_tensor(x): return torch.arange(
+                1, x+1, device=self.default_device, dtype=self.default_dtype).view(*shape)
             s = QueueTensorStorage(full_shape=shape, initial_size=16, switching_size=65536, concat_dim=concat_dim)
             s.append(make_tensor(1))
             assert s.sum() == 1, s.tensor()
@@ -93,7 +99,8 @@ class TestTensorStorage(TestCase):
             s.append(make_tensor(5))
             assert s.sum() == 1 + 6 + 15, s.tensor()
             t = s.pop(5)
-            assert torch.allclose(t.squeeze(), torch.tensor([1,1,2,3,1], dtype=torch.float32))
+            assert torch.allclose(t.squeeze(), torch.tensor(
+                [1, 1, 2, 3, 1], device=self.default_device, dtype=self.default_dtype))
             t = s.pop(0)
             assert t.shape == torch.Size(zero_shape)
             t = s.pop(-1)
@@ -102,7 +109,8 @@ class TestTensorStorage(TestCase):
             expected_sum = 1 + sum(range(1,4)) + sum(range(1,6)) - (1 + 1 + 2 + 3 + 1) + sum(range(1,101))
             assert s.sum() == expected_sum, (s.sum(), expected_sum)
             t = s.pop(5)
-            assert torch.allclose(t.squeeze(), torch.tensor([2,3,4,5,1], dtype=torch.float32)), print(t)
+            assert torch.allclose(t.squeeze(), torch.tensor(
+                [2, 3, 4, 5, 1], device=self.default_device, dtype=self.default_dtype)), print(t)
             assert s.size(concat_dim) == 99, print(s.size())
             assert s._storage.size(concat_dim) == 104, print(s._storage.size())
             s.append(make_tensor(10))
@@ -134,7 +142,7 @@ class TestTensorStorage(TestCase):
             shape[concat_dim] = -1 # does no matter.
             zero_shape = shape.copy()
             zero_shape[concat_dim] = 0
-            make_tensor = lambda x: torch.arange(1,x+1, dtype=torch.float32).view(*shape)
+            make_tensor = lambda x: torch.arange(1,x+1, dtype=self.default_dtype).view(*shape)
             s = StackTensorStorage(full_shape=shape, initial_size=16, switching_size=65536, concat_dim=concat_dim)
             s.append(make_tensor(1))
             assert s.sum() == 1, print(s)
@@ -143,7 +151,8 @@ class TestTensorStorage(TestCase):
             s.append(make_tensor(5))
             assert s.sum() == 1 + 6 + 15, print(s)
             t = s.pop(5)
-            assert torch.allclose(t.squeeze(), torch.tensor([1,2,3,4,5], dtype=torch.float32)), print(t)
+            assert torch.allclose(t.squeeze(), torch.tensor(
+                [1, 2, 3, 4, 5], device=self.default_device, dtype=self.default_dtype)), print(t)
             t = s.pop(0)
             assert t.shape == torch.Size(zero_shape)
             t = s.pop(-1)
@@ -151,7 +160,8 @@ class TestTensorStorage(TestCase):
             s.append(make_tensor(100))
             assert s.sum() == 1 + 6 + 50*101
             t = s.pop(5)
-            assert torch.allclose(t.squeeze(), torch.tensor([96,97,98,99,100], dtype=torch.float32)), print(t)
+            assert torch.allclose(t.squeeze(), torch.tensor(
+                [96, 97, 98, 99, 100], device=self.default_device, dtype=self.default_dtype)), print(t)
             assert s.size(concat_dim) == 99, print(s.size())
             assert s._storage.size(concat_dim) == 104, print(s._storage.size())
             s.append(make_tensor(10))

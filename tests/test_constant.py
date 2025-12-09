@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torchvision
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class cnn_MNIST(nn.Module):
     def __init__(self):
@@ -26,22 +26,26 @@ class cnn_MNIST(nn.Module):
         return 0.5 * x
 
 class TestConstant(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    
+    def __init__(self, methodName='runTest', generate=False,
+                 device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path='data/constant_test_data',
-            generate=generate)
+            seed=1, ref_name='constant_test_data',
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         model = cnn_MNIST()
-        checkpoint = torch.load("../examples/vision/pretrained/mnist_cnn_small.pth", map_location="cpu")
+        checkpoint = torch.load("../examples/vision/pretrained/mnist_cnn_small.pth", map_location=self.default_device)
         model.load_state_dict(checkpoint)
 
         N = 2
         n_classes = 10
         image = torch.randn(N, 1, 28, 28)
-        image = image.to(torch.float32) / 255.0
+        image = image.to(device=self.default_device,
+                         dtype=self.default_dtype) / 255.0
 
-        model = BoundedModule(model, torch.empty_like(image), device="cpu")
+        model = BoundedModule(model, torch.empty_like(image), device=self.default_device)
         eps = 0.3
         norm = np.inf
         ptb = PerturbationLpNorm(norm=norm, eps=eps)
@@ -52,6 +56,14 @@ class TestConstant(TestCase):
         assert lb.shape == ub.shape == torch.Size((2, 10))
 
         self.result = (lb, ub)
+        if self.reference:
+            self.reference = (
+                self.reference[0].to(
+                    device=self.default_device, dtype=self.default_dtype),
+                self.reference[1].to(
+                    device=self.default_device, dtype=self.default_dtype)
+            )
+
         self.rtol = 5e-4
         self.check()
 

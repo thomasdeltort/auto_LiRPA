@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -59,8 +59,10 @@ class BoundParams(BoundInput):
     def __init__(self, ori_name, value, perturbation=None, options=None, attr=None):
         super().__init__(ori_name, None, perturbation, attr=attr)
         self.register_parameter('param', value)
+        if options is None:
+            options = {}
+        self.auto_requires_grad = options.get("param", {}).get("auto_requires_grad", True)
         self.from_input = False
-        self.initializing = False
 
     def register_parameter(self, name, param):
         """Override register_parameter() hook to register only needed parameters."""
@@ -74,10 +76,10 @@ class BoundParams(BoundInput):
         self.initializing = initializing
 
     def forward(self):
-        if self.initializing:
-            return self.param_init.requires_grad_(self.training)
-        else:
-            return self.param.requires_grad_(self.training)
+        param = self.param
+        if self.auto_requires_grad:
+            param = param.requires_grad_(self.training)
+        return param
 
 class BoundBuffers(BoundInput):
     def __init__(self, ori_name, value, perturbation=None, options=None, attr=None):

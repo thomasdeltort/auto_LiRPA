@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from testcase import TestCase
+from testcase import _to, TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class cnn_4layer_test(nn.Module):
     def __init__(self):
@@ -25,14 +25,18 @@ class cnn_4layer_test(nn.Module):
         return x
 
 class TestVisionModels(TestCase):
-    def __init__(self, methodName='runTest', ref_path='data/vision_test_data', model=cnn_4layer_test(), generate=False):
-        super().__init__(methodName, seed=1234, ref_path=ref_path, generate=generate)
+    def __init__(self, methodName='runTest', ref_name='vision_test_data', model=cnn_4layer_test(), generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, seed=1234, ref_name=ref_name,
+                         generate=generate, device=device, dtype=dtype)
         self.result = {}
-        self.ref_path = ref_path
-        self.model = model
+        self.model = model.to(device=self.default_device,
+                              dtype=self.default_dtype)
 
     def setUp(self):
         super().setUp()
+        if self.reference:
+            self.reference = _to(self.reference, self.default_device)
+            self.reference = _to(self.reference, self.default_device)
         if self.generate:
             # state_dict from an existing reference is needed 
             self.reference = torch.load(self.ref_path)
@@ -72,17 +76,17 @@ class TestVisionModels(TestCase):
         np.random.seed(123)  # FIXME inconsistent seeds
         model_ori = self.model.eval()
         model_ori.load_state_dict(self.reference['model'])
-        dummy_input = self.reference['data']
+        dummy_input = self.reference['data'].to(dtype=self.default_dtype, device=self.default_device)
         inputs = (dummy_input,)
 
-        model = BoundedModule(model_ori, inputs)
+        model = BoundedModule(model_ori, inputs, device=self.default_device)
         model.set_bound_opts({'optimize_bound_args': {'lr_alpha': 0.1}})
         forward_ret = model(dummy_input)
         model_ori.eval()
 
         assert torch.allclose(model_ori(dummy_input), model(dummy_input), 1e-4, 1e-6)
 
-        model_same_slope = BoundedModule(model_ori, inputs, bound_opts=bound_opts)
+        model_same_slope = BoundedModule(model_ori, inputs, device=self.default_device, bound_opts=bound_opts)
         model_same_slope.set_bound_opts({'optimize_bound_args': {'lr_alpha': 0.1}})
 
         # Linf
@@ -131,7 +135,7 @@ class TestVisionModels(TestCase):
 
 
 if __name__ =="__main__":
-    # t = TestVisionModels(generate=True)
-    t = TestVisionModels()
+    t = TestVisionModels(generate=False)
+    # t = TestVisionModels()
     t.setUp()
     t.test_bounds()

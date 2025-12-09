@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -20,13 +20,14 @@ from collections import OrderedDict
 from contextlib import ExitStack
 
 import torch
-from torch import optim
+from torch import optim, Tensor
 from .beta_crown import print_optimized_beta
 from .cuda_utils import double2float
-from .utils import reduction_sum, multi_spec_keep_func_all
+from .utils import reduction_sum, multi_spec_keep_func_all, clone_sub_A_dict
 from .opt_pruner import OptPruner
+from .perturbations import PerturbationLpNorm
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union, Tuple, Optional, Dict
 if TYPE_CHECKING:
     from .bound_general import BoundedModule
 
@@ -139,20 +140,13 @@ def _set_gammas(nodes, parameters):
             gamma_lr = node.options['optimize_bound_args']['oc_lr']
     parameters.append({'params': gammas, 'lr': gamma_lr})
 
-def _save_ret_first_time(bounds, fill_value, x, best_ret):
-    """Save results at the first iteration to best_ret."""
-    if bounds is not None:
-        best_bounds = torch.full_like(
-            bounds, fill_value=fill_value, device=x[0].device, dtype=x[0].dtype)
-    else:
-        best_bounds = None
 
+def _save_ret_first_time(bounds, best_ret):
+    """Save results at the first iteration to best_ret."""
     if bounds is not None:
         best_ret.append(bounds.detach().clone())
     else:
         best_ret.append(None)
-
-    return best_bounds
 
 
 def _to_float64(self: 'BoundedModule', C, x, aux_reference_bounds, interm_bounds):
@@ -198,48 +192,145 @@ def _to_default_dtype(self: 'BoundedModule', x, total_loss, full_ret, ret,
     return total_loss, x, full_ret
 
 
-def _get_idx_mask(idx, full_ret_bound, best_ret_bound, loss_reduction_func):
-    """Get index for improved elements."""
-    assert idx in [0, 1], (
-        '0 means updating lower bound, 1 means updating upper bound')
-    if idx == 0:
-        idx_mask = (loss_reduction_func(full_ret_bound)
-                    > loss_reduction_func(best_ret_bound)).view(-1)
-    else:
-        idx_mask = (loss_reduction_func(full_ret_bound)
-                    < loss_reduction_func(best_ret_bound)).view(-1)
-    improved_idx = None
-    if idx_mask.any():
-        # we only pick up the results improved in a batch
-        improved_idx = idx_mask.nonzero(as_tuple=True)[0]
+def _get_idx_mask(idx: int, full_ret_bound: Tensor, best_ret_bound: Tensor, loss_reduction_func
+                  ) -> Tuple[Tensor, Optional[Tensor]]:
+    """
+    Get index for improved elements.
+    :param idx:                 0 := updating the lower bound, 1 := updating the upper bound
+    :param full_ret_bound:      Lower/upper bound results for this iteration
+    :param best_ret_bound:      The best lower/upper bound results seen thus far
+    :param loss_reduction_func: Loss reduction function that reduces the losses to just the batch
+                                dimension.
+    :return:
+            idx_mask:           A mask on the batch dimension where the mask is true if a
+                                sub-problem has seen loss improvement.
+            improved_idx:       A Tensor of the indices in the batch dimension that have seen loss
+                                improvement.
+    """
+    assert idx in (0, 1), 'idx must be 0 (lower bound) or 1 (upper bound)'
+    reduced_full = loss_reduction_func(full_ret_bound)
+    reduced_best = loss_reduction_func(best_ret_bound)
+    idx_mask = (reduced_full > reduced_best) if idx == 0 else (reduced_full < reduced_best)
+    idx_mask = idx_mask.view(-1)
+
+    improved_idx = idx_mask.nonzero(as_tuple=True)[0] if idx_mask.any() else None
     return idx_mask, improved_idx
 
 
-def _update_best_ret(full_ret_bound, best_ret_bound, full_ret, best_ret,
-                     need_update, loss_reduction_func, idx, deterministic=False):
-    """Update best_ret_bound and best_ret by comparing with new results."""
-    assert idx in [0, 1], (
-        '0 means updating lower bound, 1 means updating upper bound')
-    idx_mask, improved_idx = _get_idx_mask(
-        idx, full_ret_bound, best_ret_bound, loss_reduction_func)
+def _update_best_ret(
+    full_ret: Dict[str, Dict[str, Dict[str, Union[Tensor, 'Patches', Tuple]]]],
+    best_ret: Dict[str, Dict[str, Dict[str, Union[Tensor, 'Patches', Tuple]]]],
+    loss_reduction_func,
+    idx: int,
+    deterministic: bool = False,
+    best_out_in_A_dict: Optional[Dict[str, Union[Tensor, 'Patches', Tuple]]] = None,
+    out_in_keys: Optional[Tuple[str, str]] = None
+):
+    """
+    Update best_ret_bound and best_ret by comparing with new results.
+    :param full_ret:                The full return from the 'compute_bounds' method.
+    :param best_ret:                The best return during optimization in the same format as
+                                    'full_ret'
+    :param loss_reduction_func:     Loss reduction function that reduces the losses to just the
+                                    batch dimension.
+    :param idx:                     0 := updating the lower bound, 1 := updating the upper bound
+    :param deterministic:           If true, problems that have seen loss improvement will have
+                                    their bounds directly saved as the new best bound. Otherwise,
+                                    the current bounds will be compared to the current best bounds
+                                    and the comparison result is saved as the new best bound. In
+                                    other words, deterministic is true if an improvement in the
+                                    loss function is a sufficient condition for bound improvement.
+    :param best_out_in_A_dict:      If given, this is the A_dict entry corresponding to the output
+    :param out_in_keys:             If given, this is a tuple whose first element is the first index
+                                    into the A_dict and whose second element is the second index
+                                    into the A_dict. In particular, the first element should be the
+                                    name of the output layer of the network, and the second
+                                    element should be the name of the input layer. If these indices
+                                    are not given correctly, an indexing error will be thrown. If
+                                    given, it is assumed that we should use these keys to update
+                                    lA/uA/lbias/ubias depending on if the bounds have improved.
+                                    Therefore, we must assert that 'full_ret' and 'best_ret' contain
+                                    an A_dict.
+    :return:
+            best_ret:
+            best_out_in_A_dict:     An updated A_dict entry corresponding to the output/input layer
+            need_update:            Set to True in this method if at least one sub-problem has seen
+                                    bound improvement.
+            idx_mask:               A mask on the batch dimension where the mask is true if a
+                                    sub-problem has seen loss improvement.
+            improved_idx:           A Tensor of the indices in the batch dimension that have seen
+                                    loss improvement.
+    """
+    assert idx in (0, 1), 'idx must be 0 (lower bound) or 1 (upper bound)'
 
-    if improved_idx is not None:
-        need_update = True
-        compare = torch.max if idx == 0 else torch.min
-        if not deterministic:
-            best_ret_bound[improved_idx] = compare(
-                full_ret_bound[improved_idx], best_ret_bound[improved_idx])
+    idx_mask, improved_idx = _get_idx_mask(idx, full_ret[idx], best_ret[idx], loss_reduction_func)
+    if improved_idx is None:
+        return best_ret, best_out_in_A_dict, False, idx_mask, None
+
+    compare_fn = torch.max if idx == 0 else torch.min
+    # Update detailed return tensors (if present)
+    if full_ret[idx] is not None:
+        if deterministic:
+            best_ret[idx][improved_idx] = full_ret[idx][improved_idx]
+            if out_in_keys is not None:
+                _update_A_dict(
+                    best_out_in_A_dict,
+                    full_ret[2][out_in_keys[0]][out_in_keys[1]],
+                    improved_idx
+                )
         else:
-            best_ret_bound[improved_idx] = full_ret_bound[improved_idx]
-        if full_ret[idx] is not None:
-            if not deterministic:
-                best_ret[idx][improved_idx] = compare(
+            if out_in_keys is not None:
+                # Since we must also update the A_dict, we don't want to use the original
+                # 'compare' method as we need to know which specific problems have
+                # seen improvement.
+                cmp_op = (lambda x, y: (x > y)) if idx==0 else (lambda x, y: (x < y))
+                c_mask = cmp_op(full_ret[idx][improved_idx], best_ret[idx][improved_idx])
+                best_ret[idx][improved_idx] = torch.where(
+                    c_mask, full_ret[idx][improved_idx], best_ret[idx][improved_idx])
+                # Also update the lA/uA/lbias/ubias matrices/vectors from the output layer to
+                # the input layer if the bounds have improved and if the output and input layer
+                # keys were specified
+                _update_A_dict(
+                    best_out_in_A_dict,
+                    full_ret[2][out_in_keys[0]][out_in_keys[1]],
+                    improved_idx, c_mask
+                )
+            else:
+                # Simple tensor-wise comparison (no A_dict)
+                best_ret[idx][improved_idx] = compare_fn(
                     full_ret[idx][improved_idx],
                     best_ret[idx][improved_idx])
-            else:
-                best_ret[idx][improved_idx] = full_ret[idx][improved_idx]
 
-    return best_ret_bound, best_ret, need_update, idx_mask, improved_idx
+    return best_ret, best_out_in_A_dict, True, idx_mask, improved_idx
+
+
+def _update_A_dict(best_A, full_A, improved_idx, c_mask: Optional[Tensor] = None):
+    """
+    Update best_A dict by full_A for entries at improved_idx.
+    :param best_A:         The A_dict entry to be updated.
+    :param full_A:         The A_dict entry containing the new values.
+    :param improved_idx:   The indices in the batch dimension that have seen bound improvement.
+    :param c_mask:         A mask on the batch dimension where the mask is true if a
+                            sub-problem has seen bound improvement. If None, then the entire
+                            slice at improved_idx will be replaced.
+    """
+    for key, val in full_A.items():
+        if val is None:
+            # An entry for lA/uA/lbias/ubias may be None depending on if we are
+            # lower or upper bounding the network
+            continue
+        target = best_A[key][improved_idx]
+        source = val[improved_idx]
+        if c_mask is not None:
+            c_mask_expanded = c_mask.view(
+                *c_mask.shape,
+                *([1] * (val.dim() - c_mask.dim()))
+            ).expand_as(val[improved_idx])
+            # Selectively update entries based on c_mask
+            best_A[key][improved_idx] = torch.where(c_mask_expanded, source, target)
+        else:
+            # Replace the entire slice if no mask is provided
+            best_A[key][improved_idx] = source
 
 
 def _update_optimizable_activations(
@@ -430,13 +521,43 @@ def _get_optimized_bounds(
             apply_output_constraints_to
         )
 
+    if (return_A and self.output_name[0] in needed_A_dict.keys()
+            and self.input_name[0] in needed_A_dict[self.output_name[0]]):
+        # If the A dict will be returned, and we expect to retrieve the hyperplanes relating the
+        # output layer to the input layer, then we store these keys and pass them to the
+        # '_update_best_ret' method so that these entries may be updated during the optimization
+        # process. Only these output/input layer entries will be updated, and if other entries need
+        # to be updated, '_update_best_ret' is not the correct method to update them.
+        out_in_keys = (self.output_name[0], self.input_name[0])
+    else:
+        out_in_keys = None
+
     need_grad = True
     patience = 0
     ret_0 = None
     for i in range(iteration):
+        if i == 0:
+            # If we are at the first iteration, we need to
+            # set the constraints_optimized to None
+            self.constraints_optimized = None
+
         if cutter:
             # cuts may be optimized by cutter
             self.cut_module = cutter.cut_module
+
+        if self.constraints_optimized is not None:
+            for root in self.roots():
+                if ( hasattr(root, 'perturbation')
+                    and root.perturbation is not None
+                    # Currently constraints solving is designed for LpNorm.
+                    and isinstance(root.perturbation, PerturbationLpNorm) ):
+
+                    # Reset the constraints for this root.
+                    # TODO: Currently, the `reset` function simply overwrites,
+                    #       should support more sophisticated reset logic.
+                    root.perturbation.reset_constraints(
+                        self.constraints_optimized, decision_thresh)
+
 
         intermediate_constr = None
 
@@ -540,11 +661,7 @@ def _get_optimized_bounds(
 
         if i == 0:
             # save results at the first iteration
-            best_ret = []
-            best_ret_l = _save_ret_first_time(
-                ret[0], float('-inf'), x, best_ret)
-            best_ret_u = _save_ret_first_time(
-                ret[1], float('inf'), x, best_ret)
+            best_ret = [ret.detach().clone() if ret is not None else None for ret in ret[:2]]
             ret_0 = ret[0].detach().clone() if bound_lower else ret[1].detach().clone()
 
             for node in optimizable_activations:
@@ -557,6 +674,11 @@ def _get_optimized_bounds(
                     # Always using the best bounds so far as the reference
                     # bounds.
                     aux_reference_bounds[node.inputs[0].name] = new_intermediate
+
+            if out_in_keys is not None:
+                best_out_in_A_dict = clone_sub_A_dict(ret[2], out_in_keys)
+            else:
+                best_out_in_A_dict = None
 
         l = ret_l
         # Reduction over the spec dimension.
@@ -613,34 +735,50 @@ def _get_optimized_bounds(
                 x, total_loss, full_ret, ret, best_intermediate_bounds, return_A)
 
         with torch.no_grad():
-            # for lb and ub, we update them in every iteration since updating
-            # them is cheap
+            # for lb and ub, we update them in every iteration since updating them is cheap
             need_update = False
             improved_idx = None
             if keep_best:
-                if best_ret_u is not None:
-                    best_ret_u, best_ret, need_update, idx_mask, improved_idx = _update_best_ret(
-                        full_ret_u, best_ret_u, full_ret, best_ret, need_update,
-                        loss_reduction_func, idx=1, deterministic=deterministic)
-                if best_ret_l is not None:
-                    best_ret_l, best_ret, need_update, idx_mask, improved_idx = _update_best_ret(
-                        full_ret_l, best_ret_l, full_ret, best_ret, need_update,
-                        loss_reduction_func, idx=0, deterministic=deterministic)
+                if best_ret[0] is not None:
+                    (
+                        best_ret, best_out_in_A_dict,
+                        need_update, idx_mask, improved_idx,
+                    ) = _update_best_ret(
+                        full_ret, best_ret,
+                        loss_reduction_func,
+                        idx=0,
+                        deterministic=deterministic,
+                        best_out_in_A_dict=best_out_in_A_dict,
+                        out_in_keys=out_in_keys,
+                    )
+                if best_ret[1] is not None:
+                    (
+                        best_ret, best_out_in_A_dict,
+                        need_update, idx_mask, improved_idx,
+                    ) = _update_best_ret(
+                        full_ret, best_ret,
+                        loss_reduction_func,
+                        idx=1,
+                        deterministic=deterministic,
+                        best_out_in_A_dict=best_out_in_A_dict,
+                        out_in_keys=out_in_keys,
+                    )
             else:
                 # Not saving the best, just keep the last iteration.
                 if full_ret[0] is not None:
                     best_ret[0] = full_ret[0]
                 if full_ret[1] is not None:
                     best_ret[1] = full_ret[1]
+
             if return_A:
-                # FIXME: A should also be updated by idx.
                 best_ret = [best_ret[0], best_ret[1], full_ret[2]]
+                if out_in_keys is not None:
+                    # Update A_dict entry for output/input layer
+                    # This entry corresponds to the best bounds.
+                    # Other A_dict entries may not, as they are copied from the last iteration.
+                    best_ret[2][out_in_keys[0]][out_in_keys[1]] = best_out_in_A_dict
 
-            if need_update:
-                patience = 0  # bounds improved, reset patience
-            else:
-                patience += 1
-
+            patience = 0 if need_update else patience + 1
             time_spent = time.time() - start
 
             # Save variables if this is the best iteration.
@@ -648,26 +786,26 @@ def _get_optimized_bounds(
             # (in case divergence) and second half iterations
             # or before early stop by either stop_criterion or
             # early_stop_patience reached
-            if (i < 1 or i > int(iteration * start_save_best) or deterministic
-                    or stop_criterion_final or patience == early_stop_patience
-                    or time_spent > max_time):
-
+            if (
+                i < 1
+                or i > int(iteration * start_save_best)
+                or deterministic
+                or stop_criterion_final
+                or patience == early_stop_patience
+                or time_spent > max_time
+            ):
                 # compare with the first iteration results and get improved indexes
                 if bound_lower:
                     if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
+                        idx_mask, idx = improved_idx, None
                     else:
-                        idx_mask, idx = _get_idx_mask(
-                            0, full_ret_l, ret_0, loss_reduction_func)
+                        idx_mask, idx = _get_idx_mask(0, full_ret_l, ret_0, loss_reduction_func)
                     ret_0[idx] = full_ret_l[idx]
                 else:
                     if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
+                        idx_mask, idx = improved_idx, None
                     else:
-                        idx_mask, idx = _get_idx_mask(
-                            1, full_ret_u, ret_0, loss_reduction_func)
+                        idx_mask, idx = _get_idx_mask(1, full_ret_u, ret_0, loss_reduction_func)
                     ret_0[idx] = full_ret_u[idx]
 
                 if idx is not None:
@@ -809,9 +947,9 @@ def _get_optimized_bounds(
                           infeasible_neurons.nonzero()[:, 0])
 
     if verbosity > 0:
-        if best_ret_l is not None:
+        if best_ret[0] is not None:
             # FIXME: unify the handling of l and u.
-            print('best_l after optimization:', best_ret_l.sum().item())
+            print('best_l after optimization:', best_ret[0].sum().item())
             if beta:
                 print('beta sum per layer:', [p.sum().item() for p in betas])
         print('alpha/beta optimization time:', time.time() - start)
@@ -831,7 +969,7 @@ def _get_optimized_bounds(
 
 def init_alpha(self: 'BoundedModule', x, share_alphas=False, method='backward',
                c=None, bound_lower=True, bound_upper=True, final_node_name=None,
-               interm_bounds=None, activation_opt_params=None,
+               interm_bounds=None, reference_alphas=None,
                skip_bound_compute=False):
     self(*x) # Do a forward pass to set perturbed nodes
     final = (self.final_node() if final_node_name is None
@@ -852,9 +990,9 @@ def init_alpha(self: 'BoundedModule', x, share_alphas=False, method='backward',
         self.bound_opts['optimize_bound_args']['apply_output_constraints_to']
     )
     if (not skip_bound_compute or interm_bounds is None or
-            activation_opt_params is None or not all(
-                [act.name in activation_opt_params
-                 for act in self.optimizable_activations])):
+            reference_alphas is None or not all(
+                [act.name in reference_alphas
+                 for act in optimizable_activations])):
         skipped = False
         # if new interval is None, then CROWN interval is not present
         # in this case, we still need to redo a CROWN pass to initialize
@@ -903,7 +1041,8 @@ def init_alpha(self: 'BoundedModule', x, share_alphas=False, method='backward',
         if not start_nodes:
             continue
         if skipped:
-            node.restore_optimized_params(activation_opt_params[node.name])
+            node.restore_alpha(reference_alphas[node.name], device=x[0].device, dtype=x[0].dtype)
+
         else:
             node.init_opt_parameters(start_nodes)
         if node in self.splittable_activations:

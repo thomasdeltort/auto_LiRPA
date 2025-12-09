@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -65,7 +65,7 @@ class BoundReshape(Bound):
                         stride=A.stride, padding=A.padding, 
                         output_shape=A.output_shape, unstable_idx=A.unstable_idx)
                 # Reshape it to [spec, batch, *input_shape]  (input_shape is the shape before Reshape operation).
-                return next_A.reshape(-1, A.shape[1], *self.input_shape[1:])
+                return next_A.transpose(0, 1).reshape(-1, A.shape[1], *self.input_shape[1:])
             else:
                 return A.reshape(A.shape[0], A.shape[1], *self.input_shape[1:])
         #FIXME check reshape or view
@@ -120,6 +120,7 @@ class BoundUnsqueeze(Bound):
             axes = self.axes
         else:
             axes = x[1].item()
+            self.axes = axes
         return data.unsqueeze(axes)
 
     def bound_backward(self, last_lA, last_uA, *x, **kwargs):
@@ -145,10 +146,8 @@ class BoundUnsqueeze(Bound):
             return [(lA, uA), (None, None)], 0, 0
 
     def bound_forward(self, dim_in, *x):
-        if self.axes is not None:
-            axes = self.axes
-        else:
-            axes = self.make_axis_non_negative(x[1].lb.item(), 'output')
+        axes = self.make_axis_non_negative(
+            self.axes if self.axes is not None else x[1].lb.item(), 'output')
         x = x[0]
         if len(self.input_shape) == 0:
             lw, lb = x.lw.unsqueeze(1), x.lb.unsqueeze(0)
@@ -160,6 +159,86 @@ class BoundUnsqueeze(Bound):
 
     def build_solver(self, *v, model, C=None, model_type="mip", solver_pkg="gurobi"):
         self.solver_vars = self.forward(v[0])
+
+    def build_gradient_node(self, grad_upstream):
+        axes = self.make_axis_non_negative(self.axes, 'output')
+        if axes == 0:
+            raise ValueError("Unsqueezing with axes == 0 is not allowed")
+        node_grad = UnsqueezeGrad(axes)
+        return [(node_grad, (grad_upstream,), [])]
+
+
+class UnsqueezeGrad(Module):
+    def __init__(self, axes):
+        super().__init__()
+        self.axes = axes
+
+    def forward(self, grad_last):
+        return grad_last.squeeze(self.axes + 1)
+
+
+class BoundExpand(Bound):
+    def __init__(self, attr=None, inputs=None, output_index=0, options=None):
+        super().__init__(attr, inputs, output_index, options)
+        self.use_default_ibp = True
+
+    def forward(self, x, y):
+        y = y.clone()
+        assert y.ndim == 1
+        n, m = x.ndim, y.shape[0]
+        assert n <= m
+        for i in range(n):
+            if y[m - n + i] == 1:
+                y[m - n + i] = x.shape[i]
+            else:
+                assert x.shape[i] == 1 or x.shape[i] == y[m - n + i]
+        return x.expand(*list(y))
+    
+    def bound_backward(self, last_lA, last_uA, *x, **kwargs):
+        assert not self.is_input_perturbed(1)
+        # Although torch.expand supports prepending dimensions,
+        # bound computatiion doesn't since we must always keep
+        # the batch dimension at the beginning
+        assert (
+            len(x[0].output_shape) == len(self.output_shape)
+        ), "BoundExpand with changed ndim is not supported by bound computation"
+        n = len(self.output_shape)
+
+        def _bound_oneside(A):
+            if A is None:
+                return None
+            dims_to_sum = [i + 1 for i in range(1, n)
+                           if x[0].output_shape[i] == 1 and A.shape[i + 1] > 1]
+            return A.sum(dim=dims_to_sum, keepdim=True) if dims_to_sum else A
+        
+        return [(_bound_oneside(last_lA), _bound_oneside(last_uA)), (None, None)], 0, 0
+
+    def bound_forward(self, dim_in, *x):
+        # It doesn't support general Expand operator.
+        # This is just for the Expand operator converted from torch.repeat, and here
+        # it should just be an identical operator.
+        shape = x[1].lb
+        if not (len(x[0].lb.shape) == len(shape) and (shape == 1).all()):
+            raise NotImplementedError("General onnx::Expand is not supported")
+        return x[0]      
+
+    def build_gradient_node(self, grad_upstream):
+        shape = self.inputs[1].forward_value
+        if not (len(self.inputs[0].output_shape) == len(shape) and (shape == 1).all()):
+            raise NotImplementedError("General onnx::Expand is not supported")
+        return [(ExpandGrad(shape), (grad_upstream,), []), None]
+
+
+class ExpandGrad(Module):
+    # It doesn't support general Expand operator.
+    # This is just for the Expand operator converted from torch.repeat, and here
+    # it should just be an identical operator.
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+
+    def forward(self, grad_last):
+        return grad_last
 
 
 class BoundSqueeze(Bound):
@@ -185,7 +264,7 @@ class BoundSqueeze(Bound):
         if self.axes is not None:
             axes = self.axes
         else:
-            axes = self.make_axis_non_negative(x[1].value.item(), 'output')
+            axes = self.make_axis_non_negative(x[1].value.item(), 'input')
         if axes == 0:
             raise ValueError("Squeezing with axes == 0 is not allowed")
         return [(last_lA.unsqueeze(axes + 1) if last_lA is not None else None,
@@ -196,7 +275,7 @@ class BoundSqueeze(Bound):
         if self.axes is not None:
             axes = self.axes
         else:
-            axes = self.make_axis_non_negative(x[1].lb.item(), 'output')
+            axes = self.make_axis_non_negative(x[1].lb.item(), 'input')
         x = x[0]
         return LinearBound(
             x.lw.squeeze(axes + 1),

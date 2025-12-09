@@ -1,7 +1,7 @@
 import copy
 import subprocess
 import numpy as np
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE 
 import sys
 sys.path.append('../examples/vision')
 import models
@@ -10,10 +10,11 @@ from auto_LiRPA.perturbations import *
 
 
 class TestWeightPerturbation(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(
             methodName, seed=1234,
-            ref_path='data/weight_perturbation_test_data', generate=generate)
+            ref_name='weight_perturbation_test_data', generate=generate,
+            device=device, dtype=dtype)
         self.result = {}
 
     def test_training(self):
@@ -63,7 +64,7 @@ class TestWeightPerturbation(TestCase):
         inputs = (dummy_input,)
 
         model = BoundedModule(model_ori, inputs, bound_opts={
-            'sparse_intermediate_bounds': False, 'sparse_conv_intermediate_bounds': False, 'sparse_intermediate_bounds_with_ibp': False})
+            'sparse_intermediate_bounds': False, 'sparse_conv_intermediate_bounds': False, 'sparse_intermediate_bounds_with_ibp': False}, device=self.default_device)
         forward_ret = model(dummy_input)
         model_ori.eval()
 
@@ -97,5 +98,7 @@ class TestWeightPerturbation(TestCase):
 if __name__ == '__main__':
     testcase = TestWeightPerturbation(generate=False)
     testcase.setUp()
+    testcase.reference = testcase._to(testcase.reference, testcase.default_device)
+    testcase.reference = testcase._to(testcase.reference, testcase.default_dtype)
     testcase.test_perturbation()
     testcase.test_training()

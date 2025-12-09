@@ -32,7 +32,8 @@ class cnn_MNIST(nn.Module):
 
 model = cnn_MNIST()
 # Load the pretrained weights
-checkpoint = torch.load(os.path.join(os.path.dirname(__file__),"pretrained/mnist_cnn_small.pth"))
+checkpoint = torch.load(os.path.join(os.path.dirname(__file__),"pretrained/mnist_cnn_small.pth"),
+                        map_location=torch.device('cpu'))
 model.load_state_dict(checkpoint)
 
 ## Step 2: Prepare dataset as usual
@@ -41,16 +42,19 @@ test_data = torchvision.datasets.MNIST(
 # For illustration we only use 2 image from dataset
 N = 2
 n_classes = 10
-image = test_data.data[:N].view(N,1,28,28).cuda()
+image = test_data.data[:N].view(N,1,28,28)
 # Convert to float
 image = image.to(torch.float32) / 255.0
+if torch.cuda.is_available():
+    image = image.cuda()
+    model = model.cuda()
 
 ## Step 3: wrap model with auto_LiRPA
 # The second parameter is for constructing the trace of the computational graph,
 # and its content is not important.
 image_1, image_2 = torch.split(torch.empty_like(image), [14, 14], dim=2)
 model = BoundedModule(
-    model, (image_1, image_2), device="cuda",
+    model, (image_1, image_2), device=image.device,
     bound_opts={'conv_mode': 'matrix'} # Patches mode is not supported currently
 )
 

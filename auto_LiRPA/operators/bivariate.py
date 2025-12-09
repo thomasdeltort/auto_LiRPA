@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -17,6 +17,7 @@
 """ Bivariate operators"""
 import torch
 from torch import Tensor
+from torch.nn import Module
 from typing import Dict, Optional
 from .base import *
 from .activation_base import BoundOptimizableActivation
@@ -325,8 +326,30 @@ class BoundMul(BoundOptimizableActivation):
 
     def bound_forward(self, dim_in, x, y):
         if self.is_linear_op:
-            raise NotImplementedError
+            if not self.inputs[0].perturbed:
+                return self.bound_forward_constant(x, y, self.inputs[0].batch_dim != -1)
+            elif not self.inputs[1].perturbed:
+                return self.bound_forward_constant(y, x, self.inputs[1].batch_dim != -1)
+            else:
+                assert False, "When is_linear_op is True, at least one input should be constant."
         return self.bound_forward_both_perturbed(dim_in, x, y)
+    
+    def bound_forward_constant(self, x, y, batched_constant):
+        # x is constant
+        const = x.lb
+        const_pos, const_neg = const.clamp(min=0), const.clamp(max=0)
+        lb = const_pos * y.lb + const_neg * y.ub
+        ub = const_pos * y.ub + const_neg * y.lb
+        if batched_constant:
+            # If x is batched, its first dimension will be the batch dimension
+            # We need to unsqueeze an extra dimension to align the batch dimension
+            # x and y both have shape (B, a_1, a_2, ..., a_n)
+            # lw/uw has shape (B, dim_in, a_1, a_2, ..., a_n)
+            const_pos = const_pos.unsqueeze(1)
+            const_neg = const_neg.unsqueeze(1)
+        lw = const_pos * y.lw + const_neg * y.uw
+        uw = const_pos * y.uw + const_neg * y.lw
+        return LinearBound(lw, lb, uw, ub)
 
     def bound_forward_both_perturbed(self, dim_in, x, y):
         x_lw, x_lb, x_uw, x_ub = x.lw, x.lb, x.uw, x.ub
@@ -371,7 +394,7 @@ class BoundMul(BoundOptimizableActivation):
             elif not self.inputs[1].perturbed:
                 return self.interval_propagate_constant(y, x)
             else:
-                assert False
+                assert False, "When is_linear_op is True, at least one input should be constant."
         else:
             lower, upper = self.interval_propagate_both_perturbed(x, y)
             if self._is_softmax():
@@ -422,6 +445,29 @@ class BoundMul(BoundOptimizableActivation):
             self.requires_input_bounds = [0, 1]
             if not self.force_not_splittable:
                 self.splittable = True
+        
+    def build_gradient_node(self, grad_upstream):
+        grad_node_0 = MulGrad(self.inputs[0].output_shape if self.inputs[0].batch_dim != -1 else
+                              torch.Size((1,) + self.inputs[0].output_shape))
+        grad_node_1 = MulGrad(self.inputs[1].output_shape if self.inputs[1].batch_dim != -1 else
+                              torch.Size((1,) + self.inputs[1].output_shape))
+        return [(grad_node_0, (grad_upstream, self.inputs[1].forward_value), [self.inputs[1]]),
+                (grad_node_1, (grad_upstream, self.inputs[0].forward_value), [self.inputs[0]])]
+
+
+class MulGrad(Module):
+    def __init__(self, input_shape):
+        super().__init__()
+        # We need the input shape to handle broadcasting
+        self.input_shape = input_shape
+
+    def forward(self, grad_last, y):
+        # z = x * y
+        # ∂z/∂x = y
+        if y.ndim > 0:
+            # If y is not a constant scalar, its second dimension is for spec
+            y = y.unsqueeze(1)
+        return reduce_broadcast_dims(grad_last * y, self.input_shape)
 
 
 class BoundDiv(Bound):

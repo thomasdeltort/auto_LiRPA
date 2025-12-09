@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -67,10 +67,31 @@ def IBP_general(self: 'BoundedModule', node=None, C=None,
         node.lower, node.upper = node.interval
         if isinstance(node.lower, torch.Size):
             node.lower = torch.tensor(node.lower)
-            node.interval = (node.lower, node.upper)
         if isinstance(node.upper, torch.Size):
             node.upper = torch.tensor(node.upper)
-            node.interval = (node.lower, node.upper)
+
+        # Handle NaNs in lower and upper bounds
+        if torch.isnan(node.lower).any():
+            print(
+                f'[Interval Warning] NaN detected in lower bounds of node {node}. '
+                f'Replacing with -inf.'
+            )
+            node.lower = torch.where(
+                torch.isnan(node.lower),
+                torch.full_like(node.lower, float('-inf')),
+                node.lower
+            )
+        if torch.isnan(node.upper).any():
+            print(
+                f'[Interval Warning] NaN detected in upper bounds of node {node}. '
+                f'Replacing with +inf.'
+            )
+            node.upper = torch.where(
+                torch.isnan(node.upper),
+                torch.full_like(node.upper, float('inf')),
+                node.upper
+            )
+        node.interval = Interval.make_interval(node.lower, node.upper, other=node.interval)
 
     if C is not None:
         _delete_unused_bounds(to_be_deleted_bounds)

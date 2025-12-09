@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -28,10 +28,12 @@ import warnings
 from typing import Tuple
 from .patches import Patches
 
+
 logging.basicConfig(
-    format='%(levelname)-8s %(asctime)-12s %(message)s',
+    format='%(levelname)-8s %(asctime)-12s [%(filename)s:%(lineno)d] %(message)s',
     datefmt='%H:%M:%S',
-    stream=sys.stdout
+    stream=sys.stdout,
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG if os.environ.get('AUTOLIRPA_DEBUG', 0) else logging.INFO)
@@ -59,10 +61,10 @@ def onehotc_to_dense(one_hot_c: OneHotC, dtype: torch.dtype) -> torch.Tensor:
 # Benchmarking mode disable some expensive assertions.
 Benchmarking = True
 
-reduction_sum = lambda x: x.sum(1, keepdim=True)
-reduction_mean = lambda x: x.mean(1, keepdim=True)
-reduction_max = lambda x: x.max(1, keepdim=True).values
-reduction_min = lambda x: x.min(1, keepdim=True).values
+reduction_sum = lambda x: x.sum(dim=tuple(range(1, x.dim())), keepdim=True)
+reduction_mean = lambda x: x.mean(dim=tuple(range(1, x.dim())), keepdim=True)
+reduction_max = lambda x: x.amax(dim=tuple(range(1, x.dim())), keepdim=True)
+reduction_min = lambda x: x.amin(dim=tuple(range(1, x.dim())), keepdim=True)
 
 MIN_HALF_FP = 5e-8  # 2**-24, which is the smallest value that float16 can be represented
 
@@ -109,6 +111,30 @@ def stop_criterion_batch_any(threshold=0):
     # may unexpected broadcast, pay attention to the shape of threshold
     # x shape: batch, number_bounds; threshold shape: batch, number_bounds
     return lambda x: (x > threshold).any(dim=1, keepdim=True)
+
+def stop_criterion_general(or_spec_size, threshold=0):
+    """
+    If any spec in a group >= rhs, then this group can be stopped;
+    if all groups can be stopped, stop = True, o.w., False.
+    Args:
+        or_clause_indices: [num_clause]. the indices of the belonging OR clauses for AND clauses.
+        num_or: the number of OR clauses.
+        threshold: [batch, num_clause]. The threshold for each spec. sum(or_clause_indices) == num_clauses.
+    """
+    def stop_criterion_per_or(x):
+        # get the indices of OR clauses assigned to their corresponding atom clauses, [num_clause]
+        num_or = or_spec_size.shape[0]
+        or_clause_indices = torch.repeat_interleave(
+            torch.arange(num_or, device=or_spec_size.device), or_spec_size
+        ).view(1, -1).expand(x.shape)
+        # get the result for each spec. [batch, num_clause]
+        result_per_spec = (x > threshold) 
+        # get the number of verified ANDs for each OR clause. [batch, num_or]
+        num_verified_and_per_or = torch.scatter_reduce(result_per_spec[:, :num_or], 1, or_clause_indices, result_per_spec, 'sum', include_self=False)
+        # result of any spec in a OR (group of ANDs) is True (sum >= 1) -> result of the OR is True.
+        return num_verified_and_per_or >= 1
+    # if all OR clauses are True, then return True. [batch, 1]
+    return lambda x: stop_criterion_per_or(x).all(dim=1, keepdim=True)
 
 def stop_criterion_batch_topk(threshold=0, k=1314):
     # x shape: batch, number_bounds; threshold shape: batch, number_bounds
@@ -377,3 +403,115 @@ def sync_params(model_ori: torch.nn.Module,
         state_dict[name_ori] = v
     model_ori.load_state_dict(state_dict)
     return state_dict
+
+
+def reduce_broadcast_dims(A, target_shape, left_extra_dims=1):
+    """
+    When backward propagating tensors that are automatically broadcasted,
+    we need to reduce the broadcasted dimensions to match the input shape.
+    This can be useful for backward bound propagation and backward gradient
+    computation.
+
+    Args:
+        A: The input tensor.
+        target_shape: The target shape to reduce to.
+        left_extra_dims: The number of dimensions that A should have but the target
+            shape doesn't have. These dimensions are usually added to the left of the
+            target shape and don't need to be reduced (e.g. spec).
+
+    Example:
+        x1 has shape [a1, a2, a3, a4], x2 has shape [a2, 1, a4], y = x1 * x2.
+        Two types of broadcasting here:
+            1. Adding additional dimensions to x2 to match the dimension of x1.
+            2. Broadcasting along existing dimensions length 1.
+        In backward computation from y to x2, we need to reduce (sum) the A matrix
+        to match the shape of x2. The first dimension of A is usually for spec, so
+        the shape usually aligns from the second dimension.
+    """
+    # Step 1: Dimension doesn't exist in target shape but exists in A.
+    # cnt_sum is the number of dimensions that are broadcast.
+    # (The additional dimensions in A that are not in target shape).
+    cnt_sum = (A.ndim - left_extra_dims) - len(target_shape)
+    # The broadcast dimensions must be the first dimensions in A
+    # (except the extra dimensions and batch dimension).
+    dims = list(range(left_extra_dims + 1, cnt_sum + left_extra_dims + 1))
+    if dims:
+        A = torch.sum(A, dim=dims, keepdim=False)
+    # Step 2: Dimension exists in target shape, broadcast from 1.
+    # FIXME (05/11/2022): the following condition is not always correct.
+    # We should not rely on checking dimension is "1" or not.
+    dims = [i + left_extra_dims for i in range(left_extra_dims, len(target_shape))
+            if target_shape[i] == 1 and A.shape[i + left_extra_dims] != 1]
+    if dims:
+        A = torch.sum(A, dim=dims, keepdim=True)
+    # Check the final shape - it should be compatible.
+    assert A.shape[2:] == target_shape[1:]  # skip the spec and batch dimension.
+    return A
+
+
+@torch.jit.script
+def matmul_maybe_batched(a: torch.Tensor, b: torch.Tensor, both_batched: bool):
+    # Basically just matmul, but we need to handle the batch dimension.
+    if both_batched:
+        return torch.einsum("b...ij,b...jk->b...ik", a, b)
+    else:
+        return a.matmul(b)
+
+def transfer(tensor, device=None, dtype=None, non_blocking=False):
+    """Transfer a tensor to a specific device or dtype."""
+    if device:
+        tensor = tensor.to(device, non_blocking=non_blocking)
+    if dtype:
+        tensor = tensor.to(dtype)
+
+    return tensor
+
+
+def clone_sub_A_dict(A_dict, out_in_keys: Tuple):
+    """
+    Deep copy the A_dict structure for specific out_in_keys.
+    Args:
+        A_dict: The A_dict to be copied.
+        out_in_keys: The (out_key, in_key) pairs to be copied.
+    Returns:
+        A new A_dict with all tensors cloned.
+    """
+    # Structure: A_dict[out_key][in_key][key]
+    # key in [lA, uA, lbias, ubias, unstable_idx]
+    # lA, uA are tensors or Patches
+    # (there're also types like eyeC, OneHotC, not supported here)
+    # lbias, ubias are tensors
+    # unstable_idx is tensor or tuple of tensors
+
+    out_key, in_key = out_in_keys
+    src_subdict = A_dict[out_key][in_key]
+    cloned_subdict = {}
+
+    for key, val in src_subdict.items():
+        if val is None:
+            cloned_subdict[key] = None
+            continue
+
+        if isinstance(val, (torch.Tensor, Patches)):
+            cloned_subdict[key] = val.detach().clone()
+        elif isinstance(val, tuple):
+            cloned_subdict[key] = tuple(v.detach().clone() for v in val)
+        else:
+            raise NotImplementedError(f'Unsupported A type {type(val)} for copying.')
+    return cloned_subdict
+
+
+def clone_full_A_dict(A_dict):
+    """
+    Deep copy the A_dict structure.
+    Args:
+        A_dict: The A_dict to be copied.
+    Returns:
+        A new A_dict with all tensors cloned.
+    """
+    new_A_dict = {}
+    for out_key, in_dict in A_dict.items():
+        new_A_dict[out_key] = {}
+        for in_key in in_dict:
+            new_A_dict[out_key][in_key] = clone_sub_A_dict(A_dict, (out_key, in_key))
+    return new_A_dict

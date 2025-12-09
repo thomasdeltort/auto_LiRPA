@@ -86,11 +86,38 @@ for method in [
                 j=j, l=lb[i][j].item(), u=ub[i][j].item(), ind=indicator))
     print()
 
+
 print('Demonstration 2: Obtaining linear coefficients of the lower and upper bounds.\n')
 # There are many bound coefficients during CROWN bound calculation; here we are interested in the linear bounds
 # of the output layer, with respect to the input layer (the image).
 required_A = defaultdict(set)
 required_A[lirpa_model.output_name[0]].add(lirpa_model.input_name[0])
+
+# Helper functions to concretize the linear bounds
+def concretize_bound(A, bias, xL, xU, upper: bool):
+    """
+    Concretize linear bound.
+    If upper is True: use A_pos * xU + A_neg * xL + bias
+    If upper is False: use A_pos * xL + A_neg * xU + bias
+    """
+    A_pos = torch.clamp(A, min=0.0)
+    A_neg = torch.clamp(A, max=0.0)
+    if upper:
+        return (
+            torch.einsum("boijk,boijk->bo", A_pos, xU)
+            + torch.einsum("boijk,boijk->bo", A_neg, xL)
+            + bias
+        )
+    else:
+        return (
+            torch.einsum("boijk,boijk->bo", A_pos, xL)
+            + torch.einsum("boijk,boijk->bo", A_neg, xU)
+            + bias
+        )
+
+# Prepare input bounds
+x_L = (image - eps).unsqueeze(1)
+x_U = (image + eps).unsqueeze(1)
 
 for method in [
         'IBP+backward (CROWN-IBP)', 'backward (CROWN)', 'CROWN',
@@ -98,7 +125,7 @@ for method in [
     print("Bounding method:", method)
     if 'Optimized' in method:
         # For optimized bound, you can change the number of iterations, learning rate, etc here. Also you can increase verbosity to see per-iteration loss values.
-        lirpa_model.set_bound_opts({'optimize_bound_args': {'iteration': 20, 'lr_alpha': 0.1}})
+        lirpa_model.set_bound_opts({'optimize_bound_args': {'iteration': 30, 'lr_alpha': 0.1}})
     lb, ub, A_dict = lirpa_model.compute_bounds(x=(image,), method=method.split()[0], return_A=True, needed_A_dict=required_A)
     lower_A, lower_bias = A_dict[lirpa_model.output_name[0]][lirpa_model.input_name[0]]['lA'], A_dict[lirpa_model.output_name[0]][lirpa_model.input_name[0]]['lbias']
     upper_A, upper_bias = A_dict[lirpa_model.output_name[0]][lirpa_model.input_name[0]]['uA'], A_dict[lirpa_model.output_name[0]][lirpa_model.input_name[0]]['ubias']
@@ -111,6 +138,15 @@ for method in [
     print(f'upper bound bias term size (batch, output_dim): {list(upper_bias.size())}')
     print(f'upper bound bias term sum (smaller is better): {upper_bias.sum()}')
     print(f'These linear lower and upper bounds are valid everywhere within the perturbation radii.\n')
+
+    # Validate the concretization of the linear bounds
+    concretized_lb = concretize_bound(lower_A, lower_bias, x_L, x_U, upper=False)
+    concretized_ub = concretize_bound(upper_A, upper_bias, x_L, x_U, upper=True)
+    assert torch.allclose(
+        concretized_lb, lb, rtol=1e-4, atol=1e-5), "Lower bound mismatch! Error: {}".format((concretized_lb - lb).abs().max())
+    assert torch.allclose(
+        concretized_ub, ub, rtol=1e-4, atol=1e-5), "Upper bound mismatch! Error: {}".format((concretized_ub - ub).abs().max())
+
 
 ## An example for computing margin bounds.
 # In compute_bounds() function you can pass in a specification matrix C, which is a final linear matrix applied to the last layer NN output.

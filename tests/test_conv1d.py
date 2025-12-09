@@ -1,15 +1,12 @@
 """Test Conv1d."""
 
-from collections import defaultdict
 import torch
-import os
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
+
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from auto_LiRPA.utils import Flatten
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 
 class Model(nn.Module):
@@ -46,13 +43,18 @@ class Model(nn.Module):
         return t_linear
 
 class TestConv1D(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False,
+                 device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path=None,
-            generate=generate)
+            seed=1, ref_name=None,
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
-        np.random.seed(123)
+        if self.default_dtype == torch.float64:
+            data_path = 'data_64/'
+        else:
+            data_path = 'data/'
 
         N = 3
         C = 1
@@ -60,64 +62,62 @@ class TestConv1D(TestCase):
         n_classes = 2
         for kernel_size in [3,4]:
             for padding in [0,1]:
-                    for stride in [2,3]:
-                        print(kernel_size, padding, stride)
+                for stride in [2,3]:
+                    print(kernel_size, padding, stride)
 
-                        model_ori = Model(kernel_size=kernel_size, padding=padding, stride=stride, in_features=M,out_features=n_classes)
-                        if not self.generate:
-                            data = torch.load('data/conv1d_test_data_{}-{}-{}'.format(kernel_size, padding, stride))
-                            image = data['input']
-                            model_ori(image)
-                            model_ori.load_state_dict(data['model'])
-                        else:
-                            image = torch.rand([N, C, M])
-                            model_ori(image)
+                    model_ori = Model(kernel_size=kernel_size, padding=padding, stride=stride, in_features=M,out_features=n_classes)
+                    model_ori = model_ori.to(dtype=self.default_dtype, device=self.default_device)
+                    if not self.generate:
+                        data = torch.load(data_path + 'conv1d_test_data_{}-{}-{}'.format(kernel_size, padding, stride), weights_only=False)
+                        image = data['input'].to(dtype=self.default_dtype, device=self.default_device)
+                        model_ori(image)
+                        model_ori.load_state_dict(data['model'])
+                    else:
+                        image = torch.rand([N, C, M], dtype=self.default_dtype, device=self.default_device)
+                        model_ori(image)
 
 
-                        conv_mode = "matrix"
+                    conv_mode = "matrix"
 
-                        model = BoundedModule(model_ori, image, device="cpu", bound_opts={"conv_mode": conv_mode})
-                        eps = 0.3
-                        norm = np.inf
-                        ptb = PerturbationLpNorm(norm=norm, eps=eps)
-                        image_clean = image.detach().clone().requires_grad_(requires_grad=True) 
-                        output_clean = model_ori(image_clean)
-                        image = BoundedTensor(image, ptb)
-                        pred = model(image)
-                        lb, ub,A = model.compute_bounds(return_A=True,needed_A_dict={model.output_name[0]:model.input_name[0]},)
-                        '''
-                        # 1. testing if lb == ub == pred when eps = 0
-                        assert (lb == ub).all() and torch.allclose(lb,pred,rtol=1e-5) and torch.allclose(ub,pred,rtol=1e-5)
-                        # 2. test if A matrix equals to gradient of the input
-                        # get output's grad with respect to the input without iterating through torch.autograd.grad:
-                        # https://stackoverflow.com/questions/64988010/getting-the-outputs-grad-with-respect-to-the-input
-                        uA = A[model.output_name[0]][model.input_name[0]]['uA']
-                        lA = A[model.output_name[0]][model.input_name[0]]['lA']
-                        assert (uA==lA).all()
-                        assert (torch.autograd.functional.jacobian(model_ori,image_clean).sum(dim=2)==uA).all()
-                        assert (torch.autograd.functional.jacobian(model_ori,image_clean).sum(dim=2)==lA).all()
-                        # double check
-                        input_grads = torch.zeros(uA.shape)
-                        for i in range(N):
-                            for j in range(n_classes):
-                                input_grads[i][j]=torch.autograd.grad(outputs=output_clean[i,j], inputs=image_clean, retain_graph=True)[0].sum(dim=0)
-                        assert (input_grads==uA).all()
-                        assert (input_grads==lA).all()
-                        '''
-                        # 3. test when eps = 0.3 (uncommented)
-                        if self.generate:
-                            torch.save(
-                                {'model': model_ori.state_dict(),
-                                'input': image,
-                                'lb': lb,
-                                'ub': ub}, 'data/conv1d_test_data_{}-{}-{}'.format(kernel_size, padding, stride)
-                            )
+                    model = BoundedModule(model_ori, image, device=self.default_device, bound_opts={"conv_mode": conv_mode})
+                    eps = 0.3
+                    norm = np.inf
+                    ptb = PerturbationLpNorm(norm=norm, eps=eps)
+                    image = BoundedTensor(image, ptb)
+                    lb, ub, A = model.compute_bounds((image,), return_A=True, needed_A_dict={model.output_name[0]:model.input_name[0]},)
+                    '''
+                    # 1. testing if lb == ub == pred when eps = 0
+                    assert (lb == ub).all() and torch.allclose(lb,pred,rtol=1e-5) and torch.allclose(ub,pred,rtol=1e-5)
+                    # 2. test if A matrix equals to gradient of the input
+                    # get output's grad with respect to the input without iterating through torch.autograd.grad:
+                    # https://stackoverflow.com/questions/64988010/getting-the-outputs-grad-with-respect-to-the-input
+                    uA = A[model.output_name[0]][model.input_name[0]]['uA']
+                    lA = A[model.output_name[0]][model.input_name[0]]['lA']
+                    assert (uA==lA).all()
+                    assert (torch.autograd.functional.jacobian(model_ori,image_clean).sum(dim=2)==uA).all()
+                    assert (torch.autograd.functional.jacobian(model_ori,image_clean).sum(dim=2)==lA).all()
+                    # double check
+                    input_grads = torch.zeros(uA.shape)
+                    for i in range(N):
+                        for j in range(n_classes):
+                            input_grads[i][j]=torch.autograd.grad(outputs=output_clean[i,j], inputs=image_clean, retain_graph=True)[0].sum(dim=0)
+                    assert (input_grads==uA).all()
+                    assert (input_grads==lA).all()
+                    '''
+                    # 3. test when eps = 0.3 (uncommented)
+                    if self.generate:
+                        torch.save(
+                            {'model': model_ori.state_dict(),
+                            'input': image,
+                            'lb': lb,
+                            'ub': ub}, data_path + '/conv1d_test_data_{}-{}-{}'.format(kernel_size, padding, stride)
+                        )
 
-                        if not self.generate:
-                            lb_ref = data['lb']
-                            ub_ref = data['ub']
-                            assert torch.allclose(lb, lb_ref, 1e-3)
-                            assert torch.allclose(ub, ub_ref, 1e-3)
+                    if not self.generate:
+                        lb_ref = data['lb']
+                        ub_ref = data['ub']
+                        assert torch.allclose(lb, lb_ref, 1e-3)
+                        assert torch.allclose(ub, ub_ref, 1e-3)
 
 
 if __name__ == '__main__':

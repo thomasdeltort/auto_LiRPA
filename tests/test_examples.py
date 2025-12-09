@@ -7,11 +7,7 @@ import subprocess
 import os
 import sys
 import shlex
-import argparse
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--test', type=str, default=None)
-args = parser.parse_args()
 
 pytest_skip = pytest.mark.skip(
     reason="It should be tested on a GPU server and excluded from CI")
@@ -129,17 +125,10 @@ def test_imagenet():
         return -1
     subprocess.run(shlex.split(cmd), cwd='../examples/vision')
 
-@pytest_skip
+
 def test_release():
-    """Run all tests."""
-    test_simple_training()
-    test_transformer()
-    test_lstm()
-    test_lstm_seq()
+    """Run all tests that don't require a GPU server."""
     test_simple_verification()
-    test_cifar_training()
-    test_weight_perturbation()
-    test_tinyimagenet()
     test_custom_op()
     test_efficient_convolution()
     test_two_node()

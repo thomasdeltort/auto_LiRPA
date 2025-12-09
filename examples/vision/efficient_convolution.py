@@ -67,7 +67,8 @@ image = BoundedTensor(image, ptb)
 pred = model(image)
 
 # Compute bounds
-torch.cuda.empty_cache()
+if device == 'cuda':
+    torch.cuda.empty_cache()
 print('Using {} mode to compute convolution.'.format(conv_mode))
 lb, ub = model.compute_bounds(IBP=False, C=None, method='backward')
 
@@ -83,4 +84,5 @@ for i in range(N):
 
 # Print the GPU memory usage
 print('Memory usage in "{}" mode:'.format(conv_mode))
-print(torch.cuda.memory_summary())
+if device == 'cuda':
+    print(torch.cuda.memory_summary())

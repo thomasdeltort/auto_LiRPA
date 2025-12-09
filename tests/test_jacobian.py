@@ -1,20 +1,24 @@
 # pylint: disable=wrong-import-position
 """Test Jacobian bounds."""
-
 import sys
-sys.path.append('../examples/vision')
-from jacobian import compute_jacobians
 import torch
 import torch.nn as nn
-from testcase import TestCase
+
+sys.path.append('../examples/vision')
+from jacobian import compute_jacobians
+from auto_LiRPA import BoundedModule
 from auto_LiRPA.utils import Flatten
+from auto_LiRPA.jacobian import JacobianOP
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 
 class TestJacobian(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False,
+                 device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(
-            methodName, seed=1, ref_path='data/jacobian_test_data',
-            generate=generate)
+            methodName, seed=1, ref_name='jacobian_test_data',
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         in_dim, linear_size = 8, 100
@@ -23,12 +27,29 @@ class TestJacobian(TestCase):
             nn.Linear(3*in_dim**2, linear_size),
             nn.ReLU(),
             nn.Linear(linear_size, linear_size),
-            nn.ReLU(),
+            nn.Tanh(),
+            nn.Linear(linear_size, linear_size),
+            nn.Sigmoid(),
             nn.Linear(linear_size, 10),
         )
-        x0 = torch.randn(1, 3, in_dim, in_dim)
+        model = model.to(device=self.default_device, dtype=self.default_dtype)
+        x0 = torch.randn(1, 3, in_dim, in_dim,
+                         device=self.default_device, dtype=self.default_dtype)
         self.result = compute_jacobians(model, x0)
         self.check()
+
+    def test_concat_jacobian(self):
+        '''
+        Test JacobianOP with Concat operation. This needs some special handling
+        in auto_LiRPA to make it work properly. (See parse_graph.py for details.)
+        '''
+        class ConcatModule(nn.Module):
+            def forward(self, x):
+                return JacobianOP.apply(torch.cat([x, x], dim=1), x)
+        concatmodel = ConcatModule().to(device=self.default_device, dtype=self.default_dtype)
+        x0 = torch.randn(1, 5, device=self.default_device, dtype=self.default_dtype)
+        BoundedModule(concatmodel, x0)
+        print('Concat JacobianOP test passed.')
 
 
 if __name__ == '__main__':

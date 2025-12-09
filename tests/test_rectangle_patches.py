@@ -1,15 +1,13 @@
+import sys
 import torch
-import random
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-import sys
 sys.path.append('../examples/vision')
-import models
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class cnn_4layer_resnet(nn.Module):
     def __init__(self):
@@ -32,10 +30,11 @@ class cnn_4layer_resnet(nn.Module):
         return x
 
 class TestResnetPatches(TestCase): 
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName, 
-            seed=1234, ref_path='data/rectangle_patches_test_data',
-            generate=generate)
+            seed=1234, ref_name='rectangle_patches_test_data',
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         model_oris = [
@@ -43,7 +42,8 @@ class TestResnetPatches(TestCase):
         ]
         self.result = []
         if not self.generate:
-            self.reference = torch.load(self.ref_path)
+            self.reference = torch.load(
+                self.ref_path, map_location=self.default_device)
 
         for model_ori in model_oris:
             conv_mode = 'patches' # conv_mode can be set as 'matrix' or 'patches'        
@@ -56,9 +56,13 @@ class TestResnetPatches(TestCase):
 
             image = torch.Tensor(test_data.data[:N]).reshape(N,3,32,32)
             image = image[:, :, :28, :]
-            image = image.to(torch.float32) / 255.0
+            image = image.to(device=self.default_device,
+                             dtype=self.default_dtype) / 255.0
 
-            model = BoundedModule(model_ori, image, bound_opts={"conv_mode": conv_mode})
+            model_ori = model_ori.to(
+                device=self.default_device, dtype=self.default_dtype)
+            model = BoundedModule(model_ori, image, bound_opts={
+                                  "conv_mode": conv_mode}, device=self.default_device)
 
             ptb = PerturbationLpNorm(norm = np.inf, eps = 0.03)
             image = BoundedTensor(image, ptb)

@@ -16,10 +16,14 @@ sys.path.append('../complete_verifier')
 
 # importing clip_domains from CROWN
 from input_split.clip import clip_domains
+from testcase import DEFAULT_DEVICE, DEFAULT_DTYPE, set_default_dtype_device
 
 batches = 2 # Do not use large batch sizes when running on CI
-device = torch.device('cpu') # CI is not equipped with CUDA
-torch_dtype = torch.float32
+device = DEFAULT_DEVICE  # CI is not equipped with CUDA
+dtype = DEFAULT_DTYPE
+
+set_default_dtype_device(dtype, device)
+
 atol = 1e-4  # my references are defined at this level of tolerance
 
 def setup_module(module):
@@ -31,7 +35,7 @@ def setup_module(module):
     print()
     print("setup_module      module:%s" % module.__name__)
     print(f"Using device: {device}")
-    print(f"Using torch_dtype: {torch_dtype}")
+    print(f"Using dtype: {dtype}")
     print(f"Using atol: {atol}")
     print(f"Using number of batches (batch copies): {batches}")
     print()
@@ -44,26 +48,29 @@ def setup_function(function):
     """
     print(f"\nRunning test case: {function.__name__}")
 
+def _tensor(x):
+    return torch.tensor(x, device=device, dtype=dtype)
+
 def test_case_one_one():
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[4 / 5, -7 / 20], [3 / 10, -3 / 7]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([-3, -2], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([3, 2], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[1 / 10], [3 / 10]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[4 / 5, -7 / 20], [3 / 10, -3 / 7]])
+    x_L_base = _tensor([-3, -2])
+    x_U_base = _tensor([3, 2])
+    c_bar_base = _tensor([[1 / 10], [3 / 10]])
+    target_base = _tensor([[0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
                                                           batches)
 
     # In this suite, we have a reference for x_L/U
-    ref_x_L = torch.tensor([-3., -1.4], device=device).unsqueeze(0).expand(batches, -1)
-    ref_x_U = torch.tensor([0.75, 2.0000], device=device).unsqueeze(0).expand(batches, -1)
+    ref_x_L = _tensor([-3., -1.4]).unsqueeze(0).expand(batches, -1)
+    ref_x_U = _tensor([0.75, 2.0000]).unsqueeze(0).expand(batches, -1)
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -76,23 +83,23 @@ def test_case_one_one():
 def test_case_one_two():
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[3 / 10, -3 / 7]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([-3, -2], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([3, 2], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[3 / 10]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[3 / 10, -3 / 7]])
+    x_L_base = _tensor([-3, -2])
+    x_U_base = _tensor([3, 2])
+    c_bar_base = _tensor([[3 / 10]])
+    target_base = _tensor([[0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
                                                           batches)
 
     # In this suite, we have a reference for x_L/U
-    ref_x_L = torch.tensor([-3., -1.4], device=device).unsqueeze(0).expand(batches, -1)
-    ref_x_U = torch.tensor([1.8571, 2.0000], device=device).unsqueeze(0).expand(batches, -1)
+    ref_x_L = _tensor([-3., -1.4]).unsqueeze(0).expand(batches, -1)
+    ref_x_U = _tensor([1.8571, 2.0000]).unsqueeze(0).expand(batches, -1)
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -105,23 +112,23 @@ def test_case_one_two():
 def test_case_one_three():
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[3 / 10, -3 / 7], [3 / 10, -3 / 7]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([-3, -2], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([3, 2], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[3 / 10], [3 / 10]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[3 / 10, -3 / 7], [3 / 10, -3 / 7]])
+    x_L_base = _tensor([-3, -2])
+    x_U_base = _tensor([3, 2])
+    c_bar_base = _tensor([[3 / 10], [3 / 10]])
+    target_base = _tensor([[0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
                                                           batches)
 
     # In this suite, we have a reference for x_L/U
-    ref_x_L = torch.tensor([-3., -1.4], device=device).unsqueeze(0).expand(batches, -1)
-    ref_x_U = torch.tensor([1.8571, 2.0000], device=device).unsqueeze(0).expand(batches, -1)
+    ref_x_L = _tensor([-3., -1.4]).unsqueeze(0).expand(batches, -1)
+    ref_x_U = _tensor([1.8571, 2.0000]).unsqueeze(0).expand(batches, -1)
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -135,11 +142,11 @@ def test_case_one_three():
 def test_case_one_four():
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[4 / 5, -7 / 20, 0.1], [3 / 10, -3 / 7, 0.1]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([-3, -2, -1], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([3, 2, 1], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[1 / 10], [3 / 10]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[4 / 5, -7 / 20, 0.1], [3 / 10, -3 / 7, 0.1]])
+    x_L_base = _tensor([-3, -2, -1])
+    x_U_base = _tensor([3, 2, 1])
+    c_bar_base = _tensor([[1 / 10], [3 / 10]])
+    target_base = _tensor([[0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
@@ -147,7 +154,7 @@ def test_case_one_four():
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -159,23 +166,23 @@ def test_case_two_one():
     """
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[5/5, 1/5], [2/5, 1/5], [10/35, 1/5]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([0, 0], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([1, 1], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[-1/5], [-1/5], [-1/5]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[5/5, 1/5], [2/5, 1/5], [10/35, 1/5]])
+    x_L_base = _tensor([0, 0])
+    x_U_base = _tensor([1, 1])
+    c_bar_base = _tensor([[-1/5], [-1/5], [-1/5]])
+    target_base = _tensor([[0], [0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
                                                           batches)
 
     # In this suite, we have a reference for x_L/U
-    ref_x_L = torch.tensor([0., 0.], device=device).unsqueeze(0).expand(batches, -1)
-    ref_x_U = torch.tensor([0.2000, 1.0000], device=device).unsqueeze(0).expand(batches, -1)
+    ref_x_L = _tensor([0., 0.]).unsqueeze(0).expand(batches, -1)
+    ref_x_U = _tensor([0.2000, 1.0000]).unsqueeze(0).expand(batches, -1)
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -194,11 +201,11 @@ def test_case_two_two():
     """
     print()
     # Define the base 2D tensors
-    A_bar_base = -1. * torch.tensor([[5 / 5, 1 / 5], [2 / 5, 1 / 5], [10 / 35, 1 / 5]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([0, 0], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([1, 1], dtype=torch_dtype, device=device)
-    c_bar_base = -1. * torch.tensor([[-1 / 5], [-1 / 5], [-1 / 5]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = -1. * _tensor([[5 / 5, 1 / 5], [2 / 5, 1 / 5], [10 / 35, 1 / 5]])
+    x_L_base = _tensor([0, 0])
+    x_U_base = _tensor([1, 1])
+    c_bar_base = -1. * _tensor([[-1 / 5], [-1 / 5], [-1 / 5]])
+    target_base = _tensor([[0], [0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
@@ -210,7 +217,7 @@ def test_case_two_two():
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -228,11 +235,11 @@ def test_case_two_three():
     """
     print()
     # Define the base 2D tensors
-    A_bar_base = torch.tensor([[-5 / 5, -1 / 5], [2 / 5, 1 / 5], [10 / 35, 1 / 5]], dtype=torch_dtype, device=device)
-    x_L_base = torch.tensor([0, 0], dtype=torch_dtype, device=device)
-    x_U_base = torch.tensor([1, 1], dtype=torch_dtype, device=device)
-    c_bar_base = torch.tensor([[1 / 5], [-1 / 5], [-1 / 5]], dtype=torch_dtype, device=device)
-    target_base = torch.tensor([[0], [0], [0]], dtype=torch_dtype, device=device)
+    A_bar_base = _tensor([[-5 / 5, -1 / 5], [2 / 5, 1 / 5], [10 / 35, 1 / 5]])
+    x_L_base = _tensor([0, 0])
+    x_U_base = _tensor([1, 1])
+    c_bar_base = _tensor([[1 / 5], [-1 / 5], [-1 / 5]])
+    target_base = _tensor([[0], [0], [0]])
 
     # Expand the base tensors along the batch dimension
     lA, x_L, x_U, c_bar, thresholds, dm_lb = setup_test_matrices(A_bar_base, x_L_base, x_U_base, c_bar_base, target_base,
@@ -241,11 +248,11 @@ def test_case_two_three():
     # In this suite, we have a reference for x_L/U
     ref_x_L = x_L.clone()
     ref_x_U = torch.zeros_like(x_U)
-    ref_x_U[:] = torch.tensor([0.5, 1.0])
+    ref_x_U[:] = _tensor([0.5, 1.0])
 
     old_x_L = x_L.clone()
     old_x_U = x_U.clone()
-    ret = clip_domains(x_L, x_U, thresholds, lA, dm_lb)
+    ret = clip_domains(x_L, x_U, thresholds, lA, None, dm_lb)
     new_x_L, new_x_U = ret
     assert (new_x_L.shape == old_x_L.shape) and (new_x_U.shape == old_x_U.shape), "x_L(U) should have the same shape as before"
 
@@ -279,10 +286,8 @@ def concretize_bounds(
     """
     lA = lA.view(lA.shape[0], lA.shape[1], -1)
     batches, spec_dim, input_dim = lA.shape
-    torch_dtype = lA.dtype
-    device = lA.device
     if isinstance(lbias, int):
-        lbias = torch.tensor([lbias], dtype=torch_dtype, device=device).expand(batches, spec_dim)
+        lbias = _tensor([lbias]).expand(batches, spec_dim)
     lbias = lbias.unsqueeze(-1)  # change lbiases to be column vectors
     if C is not None:
         # Let C act like the new last linear layer of the network and distribute it to lA and lbias
@@ -375,20 +380,16 @@ def create_batch_copies(
 
 def random_setup_generator(
         randint_range=(1, 10),
-        torch_dtype=torch.float,
-        device=torch.device('cpu')
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
     """
     Creates random problem set-ups to test out if our new heuristic is compatible with various dimensions
     @param randint_range:   A range where batches, spec_dim, and input_dim will exist in
-    @param torch_dtype:     The data type of the tensors
-    @param device:          The device to place the tensors on
     @return:
     """
     batches, spec_dim, input_dim = randint(*randint_range), randint(*randint_range), randint(*randint_range)
-    lA = torch.rand((batches, spec_dim, input_dim), dtype=torch_dtype, device=device)
-    lbias = torch.rand((batches, spec_dim, 1), dtype=torch_dtype, device=device)
-    thresholds = torch.rand((batches, spec_dim, 1), dtype=torch_dtype, device=device)
+    lA = torch.rand((batches, spec_dim, input_dim))
+    lbias = torch.rand((batches, spec_dim, 1))
+    thresholds = torch.rand((batches, spec_dim, 1))
     parameters = {
         "batches": batches,
         "spec_dim": spec_dim,

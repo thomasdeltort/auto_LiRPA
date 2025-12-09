@@ -2,11 +2,10 @@
 import tqdm
 import torch
 import torch.nn as nn
-from testcase import TestCase
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 from auto_LiRPA.utils import logger
-
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 # Wrap the computation with a nn.Module
 class test_model(nn.Module):
@@ -23,8 +22,8 @@ def mul(x, y):
 
 
 class Test2DActivation(TestCase):
-    def __init__(self, methodName='runTest'):
-        super().__init__(methodName)
+    def __init__(self, methodName='runTest', device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
 
     def create_test(self, act_func, low_x, high_x, low_y, high_y,
                     ntests=10000, nsamples=1000, method='IBP'):
@@ -32,7 +31,7 @@ class Test2DActivation(TestCase):
 
         model = test_model(act_func)
         image = torch.zeros(2, ntests)
-        bounded_model = BoundedModule(model, (image[0], image[1]), device=torch.device('cpu'))
+        bounded_model = BoundedModule(model, (image[0], image[1]), device=self.default_device)
 
         # Generate randomly bounded inputs.
         p_x = torch.rand(1, ntests) * (high_x - low_x) + low_x

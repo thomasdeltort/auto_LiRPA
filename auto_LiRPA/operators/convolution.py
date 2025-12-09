@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -49,7 +49,6 @@ class BoundConv(Bound):
             self.has_bias = True
         else:
             self.has_bias = False
-        self.relu_followed = False
         self.patches_start = True
         if options is None:
             options = {}
@@ -58,6 +57,7 @@ class BoundConv(Bound):
         # if self.relu_followed is False, we need to manually pad the conv patches.
         # If self.relu_followed is True, the patches are padded in the ReLU layer
         # and the manual padding is not needed.
+        self.relu_followed = False
 
     def forward(self, *x):
         # x[0]: input, x[1]: weight, x[2]: bias if self.has_bias
@@ -120,17 +120,7 @@ class BoundConv(Bound):
                 if last_A.identity == 0:
                     # FIXME (09/20): Don't call it relu_followed. Instead, make this a property of A, called "padded" and propagate this property.
                     if not self.relu_followed:
-                        # The last_A.patches was not padded, so we need to pad them here.
-                        # If this Conv layer is followed by a ReLU layer, then the padding was already handled there and there is no need to pad again.
-                        one_d_unfolded_r = create_valid_mask(self.output_shape, last_A.patches.device,
-                                                             weight.dtype,
-                                                             last_A.patches.shape[-2:],
-                                                             last_A.stride,
-                                                             last_A.inserted_zeros,
-                                                             last_A.padding,
-                                                             last_A.output_padding,
-                                                             last_A.unstable_idx if last_A.unstable_idx else None)
-                        patches = last_A.patches * one_d_unfolded_r
+                        patches = last_A.create_padding(self.output_shape)
                     else:
                         patches = last_A.patches
 

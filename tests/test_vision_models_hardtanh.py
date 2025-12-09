@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from auto_LiRPA.perturbations import *
 from test_vision_models import TestVisionModels
+from testcase import DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class cnn_4layer_test_hardtanh(nn.Module):
     def __init__(self, in_ch, in_dim, width=2, linear_size=256):
@@ -21,8 +22,8 @@ class cnn_4layer_test_hardtanh(nn.Module):
         return x
 
 class TestCustomVisionModel(TestVisionModels):
-    def __init__(self, methodName='runTest', ref_path='data/vision_clip_test_data', model=cnn_4layer_test_hardtanh(in_ch=1, in_dim=28), generate=False):
-        super().__init__(methodName, ref_path, model, generate)
+    def __init__(self, methodName='runTest', model=cnn_4layer_test_hardtanh(in_ch=1, in_dim=28), generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, 'vision_clip_test_data', model, generate, device=device, dtype=dtype)
 
     def test_bounds(self, bound_opts=None, optimize=False):
         if bound_opts is None:

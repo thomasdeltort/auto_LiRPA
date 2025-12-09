@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -212,7 +212,7 @@ class Patches:
         """
         Create a new Patches object with new patches weights, and keep other properties the same.
         """
-        new_patches = self.patches if patches is None else patches
+        new_patches = self.patches.clone() if patches is None else patches
         new_identity = self.identity if identity is None else identity
         if new_identity and (new_patches is not None):
             raise ValueError("Identity Patches should have .patches property set to 0.")
@@ -228,6 +228,28 @@ class Patches:
             output_padding=self.output_padding if output_padding is None else output_padding,
             input_shape=self.input_shape if input_shape is None else input_shape,
         )
+    
+    def clone(self):
+        return self.create_similar()
+    
+    def detach(self):
+        new_obj = Patches(
+            patches=self.patches.detach() if self.patches is not None else None,
+            stride=self.stride,
+            padding=self.padding,
+            shape=self.shape,
+            identity=self.identity,
+            unstable_idx=(
+                tuple(idx.detach() for idx in self.unstable_idx)
+                if isinstance(self.unstable_idx, tuple)
+                else self.unstable_idx.detach()
+            ) if self.unstable_idx is not None else None,
+            output_shape=self.output_shape,
+            inserted_zeros=self.inserted_zeros,
+            output_padding=self.output_padding,
+            input_shape=self.input_shape,
+        )
+        return new_obj
 
     def to_matrix(self, input_shape):
         assert not is_shape_used(self.output_padding)
@@ -296,6 +318,21 @@ class Patches:
         else:
             # shape: [batch_size, out_c, out_h, out_w].
             return torch.einsum('bijchw,sbijchw->bsij', unfold_input, patches)
+
+    def create_padding(self, output_shape):
+        # patches was not padded, so we need to pad them here.
+        # If this layer is followed by a ReLU layer, then the padding was already handled there and there is no need to pad again.
+        one_d_unfolded_r = create_valid_mask(
+            output_shape, self.patches.device,
+            self.patches.dtype,
+            self.patches.shape[-2:],
+            self.stride,
+            self.inserted_zeros,
+            self.padding,
+            self.output_padding,
+            self.unstable_idx if self.unstable_idx else None)
+        patches = self.patches * one_d_unfolded_r
+        return patches
 
 
 def compute_patches_stride_padding(input_shape, patches_padding, patches_stride, op_padding, op_stride, inserted_zeros=0, output_padding=0, simplify=True):

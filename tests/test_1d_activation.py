@@ -4,11 +4,11 @@ import functools
 import pytest
 import torch
 import torch.nn as nn
-from testcase import TestCase
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 from auto_LiRPA.utils import logger
-
+from auto_LiRPA.operators.s_shaped import TanhGradOp, SigmoidGradOp
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 # Wrap the computation with a nn.Module
 class test_model(nn.Module):
@@ -40,15 +40,21 @@ def GELU(x):
 def gen_hardtanh(min_val, max_val):
    return functools.partial(torch.nn.functional.hardtanh, min_val=min_val, max_val=max_val)
 
+# The original tanhgrad and sigmoidgrad also take in the gradient from the following layer
+# and multiply it. Here we only implement the part that computes the local gradient.
+def tanhgrad(x):
+    return TanhGradOp.apply(x)
+
+def sigmoidgrad(x):
+    return SigmoidGradOp.apply(x)
 
 
 class Test1DActivation(TestCase):
-    def __init__(self, methodName='runTest'):
-        super().__init__(methodName)
-
+    def __init__(self, methodName='runTest', device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
 
     def create_test(self, act_func, low, high, ntests=1000, nsamples=1000,
-                    method='IBP', activation_bound_option='adaptive'):
+                    method='IBP', activation_bound_option='adaptive', input_lb=None, input_ub=None):
         print(f'Testing activation {act_func} (method {method}, activation_bound_option {activation_bound_option})')
 
         model = test_model(act_func)
@@ -57,13 +63,16 @@ class Test1DActivation(TestCase):
             model, image, bound_opts={
                 'optimize_bound_args': {'iteration': 2},
                 'activation_bound_option': activation_bound_option
-            })
+            }, device=self.default_device)
 
-        # Generate randomly bounded inputs.
-        p = torch.rand(1, ntests) * (high - low ) + low
-        q = torch.rand(1, ntests) * (high - low ) + low
-        input_lb = torch.min(p, q)
-        input_ub = torch.max(p, q)
+        if input_lb is None or input_ub is None:
+            # Generate randomly bounded inputs.
+            p = torch.rand(1, ntests) * (high - low) + low
+            q = torch.rand(1, ntests) * (high - low) + low
+            input_lb = torch.min(p, q)
+            input_ub = torch.max(p, q)
+        else:
+            low, high = torch.min(input_lb), torch.max(input_ub)
         input_center = (input_lb + input_ub) / 2.0
         ptb = PerturbationLpNorm(norm=float("inf"), eps=None, x_L=input_lb, x_U=input_ub)
         ptb_data = BoundedTensor(input_center, ptb)
@@ -138,16 +147,17 @@ class Test1DActivation(TestCase):
     def test_acts(self):
         for act_func in [torch.nn.functional.relu,
                          torch.sin, torch.cos,
-                         torch.tanh, torch.arctan,
+                         torch.tanh, torch.sigmoid, torch.arctan,
                          torch.exp, pow_2, pow_3,
-                         torch.sign, GELU, gen_hardtanh(-1,1),gen_hardtanh(-0.25,0.25),gen_hardtanh(1,10),gen_hardtanh(-5,2)]:
+                         torch.sign, GELU, gen_hardtanh(-1,1),gen_hardtanh(-0.25,0.25),gen_hardtanh(1,10),gen_hardtanh(-5,2),
+                         tanhgrad, sigmoidgrad]:
             low, high = -10, 10
             if act_func == torch.reciprocal:
                 # So far only positive values are supported.
                 low = 0.01
             self.create_test(act_func=act_func, low=low, high=high, method='IBP')
             self.create_test(act_func=act_func, low=low, high=high, method='CROWN')
-            if act_func not in [torch.exp, torch.sign, torch.sin, torch.cos]:
+            if act_func not in [torch.exp, torch.sign, torch.sin, torch.cos, tanhgrad, sigmoidgrad]:
                 # Use optimized bounds
                 self.create_test(act_func=act_func, low=low, high=high,
                                  method='CROWN-Optimized')
@@ -155,6 +165,7 @@ class Test1DActivation(TestCase):
                 test_samples = 10
                 for _ in range(test_samples):
                     self.create_test(act_func=act_func, low=low, high=high, method='CROWN-Optimized')
+
             if act_func in [torch.nn.functional.relu]:
                 self.create_test(act_func=act_func, low=low, high=high, method='Dynamic-Forward')
             if act_func in [torch.nn.functional.relu, torch.tanh]:

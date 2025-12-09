@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -169,6 +169,21 @@ class BoundActivation(Bound):
         """
         return torch.ones_like(lower, dtype=torch.bool)
 
+    # Return heuristic to select which neuron should use constraints_solving concretization
+    def compute_bound_improvement_heuristics(self, lower, upper):
+        """Return a heuristic score for each lower-upper bound pair.
+        It indicates the possible bound improvement for each neuron.
+        We will then choose if a neuron's bound needs further tightened based on the heuristic.
+        """
+        return (-lower * upper).clamp(min=0)
+
+    def get_unstable_mask(self, lower, upper):
+        """Return a mask to indicate if each neuron is unstable.
+            Here we mark all the neurons as stable by default.
+
+        0: Stable (linear) neuron; 1: unstable (nonlinear) neuron.
+        """
+        return torch.ones_like(lower, dtype=torch.bool)
 
 class BoundOptimizableActivation(BoundActivation):
     def __init__(self, attr=None, inputs=None, output_index=0, options=None):
@@ -220,14 +235,10 @@ class BoundOptimizableActivation(BoundActivation):
         CROWN backward bound propagation"""
         self.alpha = OrderedDict()
         for start_node in start_nodes:
-            if self.options.get('optimize_bound_args', {}).get('use_shared_alpha', False):
-                size_s = 1
-                ns = start_node[0]
-            else:
-                ns, size_s = start_node[:2]
-                # TODO do not give torch.Size
-                if isinstance(size_s, (torch.Size, list, tuple)):
-                    size_s = prod(size_s)
+            ns, size_s = start_node[:2]
+            # TODO do not give torch.Size
+            if isinstance(size_s, (torch.Size, list, tuple)):
+                size_s = prod(size_s)
             self.alpha[ns] = self._init_opt_parameters_impl(size_s, name_start=ns)
 
     def _init_opt_parameters_impl(self, size_spec, name_start=None):
@@ -328,8 +339,28 @@ class BoundOptimizableActivation(BoundActivation):
                              'Please call `compute_bounds` with `method=CROWN-optimized`'
                              ' at least once.')
 
-    def dump_optimized_params(self):
-        return self.alpha
+    def _transfer_alpha(self, alpha, device=None, dtype=None, non_blocking=False, require_grad=False):
+        alpha = {spec_name: transfer(alpha_value, device=device, dtype=dtype, non_blocking=non_blocking).detach().requires_grad_(require_grad)
+                    for spec_name, alpha_value in alpha.items()}
+        return alpha
 
-    def restore_optimized_params(self, alpha):
-        self.alpha = alpha
+    def dump_alpha(self, device=None, dtype=None, non_blocking=False):
+        """
+        Dump alpha parameters to a dictionary.
+        """
+        return {'alpha': self._transfer_alpha(self.alpha, device=device, dtype=dtype, non_blocking=non_blocking, require_grad=False)}
+
+    def restore_alpha(self, alpha, device=None, dtype=None, non_blocking=False):
+        """
+        Restore alpha parameters from a dictionary.
+        """
+        self.alpha = self._transfer_alpha(alpha['alpha'], device=device, dtype=dtype, non_blocking=non_blocking, require_grad=True)
+
+    def drop_unused_alpha(self, keep_nodes):
+        """
+        Drop unused alpha parameters based on the keep_nodes.
+        This function is not used in auto_LiRPA for now, but is used in alpha-beta-CROWN.
+        """
+        for spec_name in list(self.alpha.keys()):
+            if spec_name not in keep_nodes:
+                del self.alpha[spec_name]

@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -44,9 +44,14 @@ def _expand_jacobian(self):
             'sparse_features_alpha': False,
             'sparse_spec_alpha': False,
         })
+        # Optimize new nodes if possible
+        self._optimize_graph()
         for node in self.nodes():
             if isinstance(node, BoundRelu):
                 node.use_sparse_spec_alpha = node.use_sparse_features_alpha = False
+        # If Jacobian nodes are added, we need to redo the forward pass to update the
+        # properties of newly added nodes (e.g., output shape, forward value, etc.)
+        self.forward(*self.global_input)
 
 
 def expand_jacobian_node(self, jacobian_node):
@@ -82,7 +87,7 @@ def expand_jacobian_node(self, jacobian_node):
         if node == input_node:
             input_node_found = True
             continue
-        elif node.no_jacobian:
+        elif node.no_jacobian or not node.from_input:
             continue
         else:
             node_grad_ori[node.name] = node.build_gradient_node(grad[node.name])
@@ -117,7 +122,7 @@ def expand_jacobian_node(self, jacobian_node):
         if node == input_node:
             self.replace_node(jacobian_node, grad_node[node.name])
             continue
-        if node.no_jacobian:
+        if node.no_jacobian or not node.from_input:
             continue
 
         logger.debug(f'Converting gradient node for {node}')

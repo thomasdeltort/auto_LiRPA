@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -42,7 +42,7 @@ def batched_backward(self: 'BoundedModule', node, C, unstable_idx, batch_size,
     unstable_size = get_unstable_size(unstable_idx)
     print(f'Batched CROWN: node {node}, unstable size {unstable_size}')
     crown_batch_size = self.bound_opts['crown_batch_size']
-    auto_batch_size = AutoBatchSize(self.bound_opts['crown_batch_size'], self.device)
+    auto_batch_size = AutoBatchSize(self.bound_opts['crown_batch_size'], self.device, vram_ratio=self.bound_opts['batched_crown_max_vram_ratio'])
 
     ret = []
     ret_A = {} # if return_A, we will store A here
@@ -86,8 +86,7 @@ def batched_backward(self: 'BoundedModule', node, C, unstable_idx, batch_size,
             batch_ret = self.backward_general(
                 node, C_batch,
                 bound_lower=bound_lower, bound_upper=bound_upper,
-                average_A=False, need_A_only=False, unstable_idx=unstable_idx_batch,
-                verbose=False)
+                average_A=False, need_A_only=False, unstable_idx=unstable_idx_batch)
             ret.append(batch_ret[:2])
 
             if len(batch_ret) > 2:
@@ -136,7 +135,6 @@ def backward_general(
     need_A_only=False,
     unstable_idx=None,
     update_mask=None,
-    verbose=True,
     apply_output_constraints_to: Optional[List[str]] = None,
     initial_As: Optional[dict] = None,
     initial_lb: Optional[torch.tensor] = None,
@@ -156,7 +154,7 @@ def backward_general(
             start_backpropagation_at_node=start_backpropagation_at_node,
             bound_lower=bound_lower, bound_upper=bound_upper,
             average_A=average_A, need_A_only=need_A_only,
-            unstable_idx=unstable_idx, update_mask=update_mask, verbose=verbose
+            unstable_idx=unstable_idx, update_mask=update_mask
         )
 
     roots = self.roots()
@@ -172,7 +170,7 @@ def backward_general(
         # backpropagation starts.
         start_backpropagation_at_node = bound_node
 
-    if verbose:
+    if self.verbose:
         logger.debug(f'Bound backward from {start_backpropagation_at_node.__class__.__name__}({start_backpropagation_at_node.name}) '
                      f'to bound {bound_node.__class__.__name__}({bound_node.name})')
         if isinstance(C, BatchedCrownC):
@@ -238,7 +236,7 @@ def backward_general(
 
         # Initially, l.lA or l.uA will be set to C for this node.
         if l.lA is not None or l.uA is not None:
-            if verbose:
+            if self.verbose:
                 logger.debug(f'  Bound backward to {l} (out shape {l.output_shape})')
                 if l.lA is not None:
                     logger.debug('    lA type %s shape %s',
@@ -304,11 +302,11 @@ def backward_general(
                     A_record.update({
                         l.name: {
                             "lA": (
-                                A[0][0] if isinstance(A[0][0], Patches)
+                                A[0][0].detach() if isinstance(A[0][0], Patches)
                                 else A[0][0].transpose(0, 1).detach()
                             ) if A[0][0] is not None else None,
                             "uA": (
-                                A[0][1] if isinstance(A[0][1], Patches)
+                                A[0][1].detach() if isinstance(A[0][1], Patches)
                                 else A[0][1].transpose(0, 1).detach()
                             ) if A[0][1] is not None else None,
                             # When not used, lb or ub is tensor(0).
@@ -341,8 +339,18 @@ def backward_general(
             bound_node, roots[0].lA, roots[0].uA, roots[0].lower.size()[1:], unstable_idx,
             batch_mask=update_mask)
 
-    lb, ub = concretize(self, batch_size, output_dim, lb, ub,
-                        average_A=average_A, node_start=bound_node)
+    lb, ub = self.concretize_bounds(
+        node=bound_node,
+        lower=lb,
+        upper=ub,
+        concretize_mode='backward',
+        batch_size=batch_size,
+        output_dim=output_dim,
+        average_A=average_A,
+        clip_neuron_selection_value=self.clip_neuron_selection_value,
+        clip_neuron_selection_type=self.clip_neuron_selection_type
+    )
+
     if self.return_A and self.needed_A_dict and bound_node.name in self.needed_A_dict:
         save_root_A(
             bound_node, A_record, self.A_dict, roots,
@@ -371,13 +379,17 @@ def backward_general(
             # make sure there is no bug for cut constraints propagation
             print(f"Warning: lb is larger than ub with diff: {(lb-ub)[(lb-ub)>0].max().item()}")
 
-    if verbose:
+    if self.verbose:
         logger.debug('')
 
     if self.invprop_enabled():
         lb, ub = self.invprop_check_infeasible_bounds(lb, ub)
 
     if self.return_A:
+        if self.bound_opts['clip_in_alpha_crown'] and self.final_name in self.A_dict.keys():
+            for v in self.A_dict[self.final_name].values():
+                if v["lA"] is not None:
+                    self.constraints_optimized = (v["lA"], v["lbias"])
         return lb, ub, self.A_dict
     else:
         return lb, ub
@@ -445,12 +457,14 @@ def get_sparse_C(self: 'BoundedModule', node, ref_intermediate):
                 # Create C in batched CROWN
                 newC = BatchedCrownC('OneHot')
                 reduced_dim = True
-            elif ((0 < unstable_size <= minimum_sparsity * dim
-                    and alpha_is_sparse is None) or alpha_is_sparse):
+            elif (((0 < unstable_size <= minimum_sparsity * dim and alpha_is_sparse is None) or
+                   alpha_is_sparse) and
+                   len(node.output_shape) <= 2):
                 # When we already have sparse alpha for this layer, we always
                 # use sparse C. Otherwise we determine it by sparsity.
                 # Create an abstract C matrix, the unstable_idx are the non-zero
                 # elements in specifications for all batches.
+                # Shouldn't use OneHotC if the output is not a 1-d tensor.
                 newC = OneHotC(
                     [batch_size, unstable_size, *node.output_shape[1:]],
                     self.device, unstable_idx, None)
@@ -618,8 +632,8 @@ def restore_sparse_bounds(self: 'BoundedModule', node, unstable_idx,
                 upper[:, unstable_idx[0], unstable_idx[1], unstable_idx[2], unstable_idx[3]] = new_upper
         else:
             # Other layers.
-            lower = ref_intermediate_lb.detach().clone().view(batch_size, -1)
-            upper = ref_intermediate_ub.detach().clone().view(batch_size, -1)
+            lower = ref_intermediate_lb.detach().clone().reshape(batch_size, -1)
+            upper = ref_intermediate_ub.detach().clone().reshape(batch_size, -1)
             lower[:, unstable_idx] = new_lower.view(batch_size, -1)
             upper[:, unstable_idx] = new_upper.view(batch_size, -1)
         node.lower = lower.view(batch_size, *node.output_shape[1:])
@@ -691,91 +705,6 @@ def _preprocess_C(self: 'BoundedModule', C, node):
     return C, batch_size, output_dim, output_shape
 
 
-def concretize_root(root, batch_size, output_dim,
-                    average_A=False, node_start=None, input_shape=None):
-    if average_A and isinstance(root, BoundParams):
-        lA = root.lA.mean(
-            node_start.batch_dim + 1, keepdim=True
-        ).expand(root.lA.shape) if (root.lA is not None) else None
-        uA = root.uA.mean(
-            node_start.batch_dim + 1, keepdim=True
-        ).expand(root.uA.shape) if (root.uA is not None) else None
-    else:
-        lA, uA = root.lA, root.uA
-    if not isinstance(root.lA, eyeC) and not isinstance(root.lA, Patches):
-        lA = root.lA.reshape(output_dim, batch_size, -1).transpose(0, 1) if (lA is not None) else None
-    if not isinstance(root.uA, eyeC) and not isinstance(root.uA, Patches):
-        uA = root.uA.reshape(output_dim, batch_size, -1).transpose(0, 1) if (uA is not None) else None
-    if hasattr(root, 'perturbation') and root.perturbation is not None:
-        if isinstance(root, BoundParams):
-            # add batch_size dim for weights node
-            lb = root.perturbation.concretize(
-                root.center.unsqueeze(0), lA, sign=-1, aux=root.aux
-            ) if (lA is not None) else None
-            ub = root.perturbation.concretize(
-                root.center.unsqueeze(0), uA, sign=+1, aux=root.aux
-            ) if (uA is not None) else None
-        else:
-            lb = root.perturbation.concretize(
-                root.center, lA, sign=-1, aux=root.aux
-            ) if lA is not None else None
-            ub = root.perturbation.concretize(
-                root.center, uA, sign=+1, aux=root.aux
-            ) if uA is not None else None
-    else:
-        fv = root.forward_value
-        if type(root) == BoundInput:
-            # Input node with a batch dimension
-            batch_size_ = batch_size
-        else:
-            # Parameter node without a batch dimension
-            batch_size_ = 1
-
-        def concretize_constant(A):
-            if isinstance(A, eyeC):
-                return fv.view(batch_size_, -1)
-            elif isinstance(A, Patches):
-                return A.matmul(fv, input_shape=input_shape)
-            elif type(root) == BoundInput:
-                return A.matmul(fv.view(batch_size_, -1, 1)).squeeze(-1)
-            else:
-                return A.matmul(fv.view(-1, 1)).squeeze(-1)
-
-        lb = concretize_constant(lA) if (lA is not None) else None
-        ub = concretize_constant(uA) if (uA is not None) else None
-
-    return lb, ub
-
-
-def concretize(self, batch_size, output_dim, lb=None, ub=None,
-               average_A=False, node_start=None):
-    roots = self.roots()
-    if isinstance(lb, torch.Tensor) and lb.ndim > 2:
-        lb = lb.reshape(lb.shape[0], -1)
-    if isinstance(ub, torch.Tensor) and ub.ndim > 2:
-        ub = ub.reshape(ub.shape[0], -1)
-
-    def add_b(b1, b2):
-        if b2 is None:
-            return b1
-        elif b1 is None:
-            return b2
-        else:
-            return b1 + b2
-
-    for i in range(len(roots)):
-        roots[i].lb = roots[i].ub = None
-        if roots[i].lA is None and roots[i].uA is None:
-            continue
-        roots[i].lb, roots[i].ub = concretize_root(
-            roots[i], batch_size, output_dim, average_A=average_A,
-            node_start=node_start, input_shape=roots[0].center.shape)
-        lb = add_b(lb, roots[i].lb)
-        ub = add_b(ub, roots[i].ub)
-
-    return lb, ub
-
-
 def addA(A1, A2):
     """ Add two A (each of them is either Tensor or Patches) """
     if type(A1) == type(A2):
@@ -838,14 +767,14 @@ def save_root_A(node, A_record, A_dict, roots, needed_A_dict, lb, ub,
         if roots[i].name in needed_A_dict:
             if roots[i].lA is not None:
                 if isinstance(roots[i].lA, Patches):
-                    _lA = roots[i].lA
+                    _lA = roots[i].lA.detach()
                 else:
                     _lA = roots[i].lA.transpose(0, 1).detach()
             else:
                 _lA = None
             if roots[i].uA is not None:
                 if isinstance(roots[i].uA, Patches):
-                    _uA = roots[i].uA
+                    _uA = roots[i].uA.detach()
                 else:
                     _uA = roots[i].uA.transpose(0, 1).detach()
             else:
@@ -988,7 +917,7 @@ def get_alpha_crown_start_nodes(
 
         if nj.name == final_node_name:
             # Final layer, always the number of specs as the shape.
-            size_final = self[final_node_name].output_shape[-1] if c is None else c.size(1)
+            size_final = self[final_node_name].output_shape[1:] if c is None else c.size(1)
             # The 4-th element indicates that this start node is the final node,
             # which may be utilized by operators that do not know the name of
             # the final node.

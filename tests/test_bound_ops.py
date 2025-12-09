@@ -2,7 +2,7 @@
 import torch
 from auto_LiRPA.bound_ops import *
 from auto_LiRPA.linear_bound import LinearBound
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 
 class Dummy:
@@ -15,13 +15,15 @@ class Dummy:
 
 
 class TestBoundOp(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False,
+                 device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path='data/bound_ops_data',
-            generate=generate)
+            seed=1, ref_name='bound_ops_data',
+            generate=generate, device=device, dtype=dtype)
 
     def test(self):
-        device = 'cpu'
+        device = self.default_device
+        dtype = self.default_dtype
         batch_size = 5
         dim_final = 7
         dim_output = 9
@@ -119,8 +121,15 @@ class TestBoundOp(TestCase):
         for i in range(3):
             for j in range(2):
                 if A_ref[i][j] is not None:
-                    ref = A_ref[i][j]
+                    ref = A_ref[i][j].to(device=device, dtype=dtype)
                     self.assertEqual(A[i][j], ref)
+                    
+        lbias_ref = lbias_ref.to(device=device, dtype=dtype)
+        ubias_ref = ubias_ref.to(device=device, dtype=dtype)
+        bound_out_ref = (
+            bound_out_ref[0].to(device=device, dtype=dtype),
+            bound_out_ref[1].to(device=device, dtype=dtype)
+        )
         self.assertEqual(lbias, lbias_ref)
         self.assertEqual(ubias, ubias_ref)
         self.assertEqual(bound_out[0], bound_out_ref[0])

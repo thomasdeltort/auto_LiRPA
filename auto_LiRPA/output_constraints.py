@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -65,7 +65,6 @@ def backward_general_invprop(
     need_A_only=False,
     unstable_idx=None,
     update_mask=None,
-    verbose=True,
 ):
     use_beta_crown = self.bound_opts['optimize_bound_args']['enable_beta_crown']
     # Sometimes, not using output constraints can give better results.
@@ -101,7 +100,6 @@ def backward_general_invprop(
                 need_A_only=need_A_only,
                 unstable_idx=unstable_idx,
                 update_mask=update_mask,
-                verbose=verbose,
                 apply_output_constraints_to=[],
             )
     res = self.backward_general_with_output_constraint(
@@ -114,7 +112,6 @@ def backward_general_invprop(
         need_A_only=need_A_only,
         unstable_idx=unstable_idx,
         update_mask=update_mask,
-        verbose=verbose,
     )
     if best_of_oc_and_no_oc:
         # We use the best of both results. This would convert Infs to NaNs
@@ -151,7 +148,6 @@ def backward_general_with_output_constraint(
     need_A_only=False,
     unstable_idx=None,
     update_mask=None,
-    verbose=True,
 ):
     assert start_backporpagation_at_node is None
     assert not isinstance(C, str)
@@ -403,7 +399,6 @@ def backward_general_with_output_constraint(
         need_A_only = need_A_only,
         unstable_idx = unstable_idx,
         update_mask = update_mask,
-        verbose = verbose,
         apply_output_constraints_to = [],  # no nested application
         initial_As = initial_As,
         initial_lb = lower_b,

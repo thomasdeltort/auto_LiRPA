@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -413,14 +413,20 @@ class BoundMaxPool(BoundOptimizableActivation):
 
         return lower_d, lower_b, upper_d, upper_b
 
-    def dump_optimized_params(self):
-        ret = {'alpha': self.alpha}
+    def dump_alpha(self, device=None, dtype=None, non_blocking=False):
+        ret = {'alpha': self._transfer_alpha(self.alpha, device=device, dtype=dtype, non_blocking=non_blocking, require_grad=False)}
         ret['init'] = self.init
         return ret
 
-    def restore_optimized_params(self, alpha):
-        self.alpha = alpha['alpha']
+    def restore_alpha(self, alpha, device=None, dtype=None, non_blocking=False):
+        self.alpha = self._transfer_alpha(alpha['alpha'], device=device, dtype=dtype, non_blocking=non_blocking, require_grad=True)
         self.init = alpha['init']
+
+    def drop_unused_alpha(self, keep_nodes):
+        for spec_name in list(self.alpha.keys()):
+            if spec_name not in keep_nodes:
+                del self.alpha[spec_name]
+                del self.init[spec_name]
 
     def build_solver(self, *v, model, C=None, model_type="mip", solver_pkg="gurobi"):
         # e.g., last layer input gurobi vars (3,32,32)
@@ -514,6 +520,7 @@ class BoundAveragePool(Bound):
         self.ceil_mode = False
         self.count_include_pad = True
         self.use_default_ibp = True
+        self.relu_followed = False
 
     def forward(self, x):
         return F.avg_pool2d(x, self.kernel_size, self.stride,
@@ -579,11 +586,11 @@ class BoundAveragePool(Bound):
                     if last_A.unstable_idx is None:
                         # shape is: [out_C, batch, out_H, out_W, in_c, patch_H, patch_W]
                         up_sampled_patches = F.interpolate(
-                            patches.view(shape[0] * shape[1],
+                            patches.reshape(shape[0] * shape[1],
                                          shape[2] * shape[3], *shape[4:]),
                             scale_factor=[1,] + self.kernel_size)
                         # The dimension of patch-H and patch_W has changed.
-                        up_sampled_patches = up_sampled_patches.view(
+                        up_sampled_patches = up_sampled_patches.reshape(
                             *shape[:-2], up_sampled_patches.size(-2),
                             up_sampled_patches.size(-1))
                     else:
@@ -623,18 +630,20 @@ class BoundAveragePool(Bound):
                     weight = torch.full(size=(self.input_shape[1], 1, *self.kernel_size),
                                         fill_value=value, dtype=patches.dtype,
                                         device=patches.device)
+                    if not self.relu_followed:
+                        patches = last_A.create_padding(self.output_shape)
                     weight = insert_zeros(weight, last_A.inserted_zeros)
                     if last_A.unstable_idx is None:
                         # shape is: [out_C, batch, out_H, out_W, in_c, patch_H, patch_W]
                         up_sampled_patches = F.conv_transpose2d(
                             patches.reshape(shape[0] * shape[1] * shape[2] * shape[3], *shape[4:]),
-                            weight, stride=self.kernel_size,
+                            weight, stride=self.stride,
                             groups=self.input_shape[1])
                     else:
                         # shape is: [spec, batch, in_c, patch_H, patch_W]
                         up_sampled_patches = F.conv_transpose2d(
                             patches.reshape(shape[0] * shape[1], *shape[2:]),
-                            weight, stride=self.kernel_size,
+                            weight, stride=self.stride,
                             groups=self.input_shape[1])
                     up_sampled_patches = up_sampled_patches.view(
                         *shape[:-2], up_sampled_patches.size(-2),

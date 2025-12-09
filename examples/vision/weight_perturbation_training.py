@@ -231,8 +231,10 @@ def main(args):
     # after CrossEntropyWrapper, the final name will change because of one more input node in CrossEntropyWrapper
     final_name2 = model_loss._modules[final_name1].output_name[0]
     assert type(model._modules[final_name1]) == type(model_loss._modules[final_name2])
+    
     if args.multigpu:
         model_loss = BoundDataParallel(model_loss)
+        
     model_loss.ptb = model.ptb = model_ori.ptb  # Perturbation on the parameters
 
     ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
@@ -267,7 +269,7 @@ def main(args):
     if args.verify:
         eps_scheduler = FixedScheduler(args.eps)
         with torch.no_grad():
-            Train(model, 1, test_data, eps_scheduler, norm, False, None, 'CROWN-IBP', loss_fusion=False, final_node_name=None)
+            Train(model_loss, 1, test_data, eps_scheduler, norm, False, None, args.bound_type, loss_fusion=False, final_node_name=final_name2)
     else:
         timer = 0.0
         best_loss = 1e10
@@ -290,8 +292,8 @@ def main(args):
 
             # Test one epoch.
             with torch.no_grad():
-                m = Train(model_loss, t, test_data, eps_scheduler, norm, False, None, args.bound_type,
-                            loss_fusion=False, final_node_name=final_name2)
+                m = Train(model, t, test_data, eps_scheduler, norm, False, None, args.bound_type,
+              loss_fusion=False, final_node_name=final_name1)
 
             # Save checkpoints.
             save_dict = {'state_dict': state_dict, 'epoch': t, 'optimizer': opt.state_dict()}

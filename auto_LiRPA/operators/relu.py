@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -358,20 +358,47 @@ class BoundTwoPieceLinear(BoundOptimizableActivation):
 
         return [(lA, uA)], lbias, ubias
 
-    def dump_optimized_params(self):
-        ret = {'alpha': self.alpha}
+    def _transfer_alpha_lookup_idx(self, alpha_lookup_idx, device=None, dtype=None, non_blocking=False):
+        if alpha_lookup_idx is None:
+            return None
+        alpha_lookup_idx = {spec_name: transfer(idx, device=device, dtype=dtype, non_blocking=non_blocking) if idx is not None else None
+                            for spec_name, idx in alpha_lookup_idx.items()}
+        return alpha_lookup_idx
+
+    def _transfer_alpha_indices(self, alpha_indices, device=None, dtype=None, non_blocking=False):
+        if alpha_indices is None:
+            return None
+        alpha_indices = [transfer(indices, device=device, dtype=dtype, non_blocking=non_blocking) for indices in alpha_indices]
+        return alpha_indices
+
+    def dump_alpha(self, device=None, dtype=None, non_blocking=False):
+        ret = {'alpha': self._transfer_alpha(self.alpha, device=device, dtype=dtype, non_blocking=non_blocking, require_grad=False)}
         if self.use_sparse_spec_alpha:
-            ret['alpha_lookup_idx'] = self.alpha_lookup_idx
+            ret['alpha_lookup_idx'] = self._transfer_alpha_lookup_idx(self.alpha_lookup_idx, device=device, dtype=None, non_blocking=non_blocking)
         if self.use_sparse_features_alpha:
-            ret['alpha_indices'] = self.alpha_indices
+            ret['alpha_indices'] = self._transfer_alpha_indices(self.alpha_indices, device=device, dtype=None, non_blocking=non_blocking)
         return ret
 
-    def restore_optimized_params(self, alpha):
-        self.alpha = alpha['alpha']
+    def restore_alpha(self, alpha, device=None, dtype=None, non_blocking=False):
+        self.alpha = self._transfer_alpha(alpha['alpha'], device=device, dtype=dtype, non_blocking=non_blocking, require_grad=True)
         if self.use_sparse_spec_alpha:
-            self.alpha_lookup_idx = alpha['alpha_lookup_idx']
+            self.alpha_lookup_idx = self._transfer_alpha_lookup_idx(alpha['alpha_lookup_idx'], device=device, dtype=None, non_blocking=non_blocking)
         if self.use_sparse_features_alpha:
-            self.alpha_indices = alpha['alpha_indices']
+            self.alpha_indices = self._transfer_alpha_indices(alpha['alpha_indices'], device=device, dtype=None, non_blocking=non_blocking)
+
+    def drop_unused_alpha(self, keep_nodes):
+        for spec_name in list(self.alpha.keys()):
+            # If the spec_name is not in keep_nodes, we delete it.
+            if spec_name not in keep_nodes:
+                del self.alpha[spec_name]
+                # if use_sparse_spec_alpha is True, we also delete the alpha_lookup_idx if needed.
+                if self.use_sparse_spec_alpha:
+                    del self.alpha_lookup_idx[spec_name]
+
+        # if there is no alpha left and use_sparse_features_alpha is True,
+        # we also delete the alpha_indices.
+        if not self.alpha and self.use_sparse_features_alpha:
+            self.alpha_indices = None
 
 
 class BoundRelu(BoundTwoPieceLinear):
@@ -636,7 +663,7 @@ class BoundRelu(BoundTwoPieceLinear):
                     ub_lower_d = self.reconstruct_full_alpha(
                         ub_lower_d, full_alpha_shape, self.alpha_indices)
 
-            lb_lower_d, ub_lower_d, zero_coeffs = self._relu_mask_alpha(lower, upper, lb_lower_d, ub_lower_d)
+            lb_lower_d, ub_lower_d, zero_coeffs = self._relu_mask_alpha(lower, upper, lb_lower_d, ub_lower_d, leaky_alpha=self.leaky_alpha)
             self.zero_backward_coeffs_l = self.zero_backward_coeffs_u = zero_coeffs
             flag_expand = True  # we already have the spec dimension.
 
@@ -765,6 +792,22 @@ class BoundRelu(BoundTwoPieceLinear):
         assert input_index == 0
         return torch.logical_and(lower < 0, upper > 0)
 
+    # Return unstable mask to determine which neuron should use constraints_solving concretization
+    def get_unstable_mask(self, lower, upper):
+        """Return a mask to indicate if each neuron is unstable.
+
+        0: Stable (linear) neuron; 1: unstable (nonlinear) neuron.
+        """
+        return torch.logical_and(lower < 0, upper > 0)
+
+    # Return heuristic to select which neuron should use constraints_solving concretization
+    def compute_bound_improvement_heuristics(self, lower, upper):
+        """Return a heuristic score for each lower-upper bound pair.
+        It indicates the possible bound improvement for each neuron.
+        We will then choose if a neuron's bound needs further tightened based on the heuristic 
+        """
+        # This heuristic is actually BaBSR-interception-only.
+        return (-lower * upper).clamp(min=0) / (upper - lower + 1e-8).abs()
 
 class BoundLeakyRelu(BoundRelu):
     pass

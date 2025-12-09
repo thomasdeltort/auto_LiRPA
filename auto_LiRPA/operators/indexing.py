@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -16,6 +16,7 @@
 #########################################################################
 from .base import *
 from ..patches import Patches, patches_to_matrix
+from torch.nn import Module
 
 
 class BoundGather(Bound):
@@ -31,8 +32,8 @@ class BoundGather(Bound):
         x = x.to(self.indices.device)
         if indices.ndim == 0:
             if indices == -1:
-                indices = x.shape[self.axis] + indices
-            return torch.index_select(x, dim=self.axis, index=indices).squeeze(self.axis)
+                self.indices = x.shape[self.axis] + indices
+            return torch.index_select(x, dim=self.axis, index=self.indices).squeeze(self.axis)
         elif indices.ndim == 1:
             if self.axis == 0:
                 assert not self.perturbed
@@ -99,8 +100,7 @@ class BoundGather(Bound):
         return [(_bound_oneside(last_lA), _bound_oneside(last_uA)), (None, None)], 0, 0
 
     def bound_forward(self, dim_in, x, indices):
-        assert self.indices.numel() == 1 and self.indices.ndim <= 1 # TODO
-
+        assert self.indices.numel() == 1 and self.indices.ndim <= 1 and (self.indices >= 0).all()
         if isinstance(x, torch.Size):
             lw = uw = torch.zeros(dim_in, device=self.device)
             lb = ub = torch.index_select(
@@ -125,6 +125,92 @@ class BoundGather(Bound):
 
     def build_solver(self, *v, model, C=None, model_type="mip", solver_pkg="gurobi"):
         self.solver_vars = self.forward(v[0], v[1])
+
+    def build_gradient_node(self, grad_upstream):
+        return [(GatherGrad(self.axis, self.indices, self.input_shape), (grad_upstream,), []), None]
+
+
+class GatherGrad(Module):
+    def __init__(self, axis, indices, input_shape):
+        super().__init__()
+        self.axis = axis
+        self.indices = indices
+        self.input_shape = input_shape
+    
+    def forward(self, grad_last):
+        # TODO: It's better to use scatter_add_ instead of cat.
+        # This is a workaround for the fact that scatter_add_ does not support negative indices.
+
+        # Scalar indices case (ndim == 0)
+        if self.indices.ndim == 0:
+            grad_unsq = grad_last.unsqueeze(self.axis)
+            
+            # Get the scalar index and adjust if negative.
+            idx = int(self.indices)
+            if idx < 0:
+                idx = self.input_shape[self.axis] + idx
+            
+            # Build the gradient by concatenating three parts along self.axis:
+            tensors = []
+            # 1. Zeros block before the gathered element (if idx > 0)
+            if idx > 0:
+                shape_pre = list(grad_unsq.shape)
+                shape_pre[self.axis] = idx  # pre-block has size idx along self.axis
+                zeros_pre = torch.zeros(shape_pre, dtype=grad_last.dtype, device=grad_last.device)
+                tensors.append(zeros_pre)
+            
+            # 2. The gathered gradient slice (already in grad_unsq)
+            tensors.append(grad_unsq)
+            
+            # 3. Zeros block after the gathered element
+            num_after = self.input_shape[self.axis] - idx - 1
+            if num_after > 0:
+                shape_post = list(grad_unsq.shape)
+                shape_post[self.axis] = num_after
+                zeros_post = torch.zeros(shape_post, dtype=grad_last.dtype, device=grad_last.device)
+                tensors.append(zeros_post)
+            
+            # Concatenate all parts along self.axis to form the full gradient tensor.
+            grad_input = torch.cat(tensors, dim=self.axis)
+            return grad_input
+
+        # 1-D indices case (ndim == 1)
+        elif self.indices.ndim == 1:
+            grad_slices = []
+            # Iterate over each position in the original input along self.axis.
+            for i in range(self.input_shape[self.axis]):
+                # matching: tensor of indices (in grad_last) where the gathered index equals i.
+                matching = (self.indices == i).nonzero(as_tuple=False).squeeze(-1)
+                
+                if matching.numel() == 0:
+                    # No matching index: create a zeros slice with the same shape as one slice of grad_last.
+                    slice_shape = list(grad_last.shape)
+                    slice_shape[self.axis] = 1  # single slice along self.axis
+                    grad_slice = torch.zeros(slice_shape, dtype=grad_last.dtype, device=grad_last.device)
+                else:
+                    # There are one or more matching positions.
+                    # For each matching index j, extract the corresponding slice from grad_last.
+                    slice_list = []
+                    for j in matching.tolist():
+                        # Build slicing object：select all elements, but at self.axis take index j.
+                        slicer = [slice(None)] * grad_last.dim()
+                        slicer[self.axis] = j
+                        # Extract the slice and add back the missing dimension.
+                        slice_j = grad_last[tuple(slicer)].unsqueeze(self.axis)
+                        slice_list.append(slice_j)
+                    # Concatenate all slices along self.axis; if there are duplicates, sum them.
+                    cat_slices = torch.cat(slice_list, dim=self.axis)
+                    # Sum along self.axis to accumulate contributions from duplicate indices.
+                    grad_slice = cat_slices.sum(dim=self.axis, keepdim=True)
+                # Append the slice corresponding to position i.
+                grad_slices.append(grad_slice)
+            
+            # Concatenate all slices in order along self.axis to form the final gradient tensor.
+            grad_input = torch.cat(grad_slices, dim=self.axis)
+            return grad_input
+
+        else:
+            raise ValueError("Unsupported indices dimensions in gradient for Gather")
 
 
 class BoundGatherElements(Bound):

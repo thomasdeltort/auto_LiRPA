@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -20,10 +20,10 @@ import torch
 from torch.autograd import Function
 
 from .activation_base import BoundActivation
-from .nonlinear import BoundOptimizableNonLinear
+from .s_shaped import BoundSShaped
 
 
-class BoundSin(BoundOptimizableNonLinear):
+class BoundSin(BoundSShaped):
     # Lookup tables shared by all BoundSin classes.
     xl_lower_tb = None
     xl_upper_tb = None
@@ -74,29 +74,49 @@ class BoundSin(BoundOptimizableNonLinear):
         self.tp_lower_init = {}
         self.tp_upper_init = {}
 
-    def generate_inflections(self, lb, ub):
-        return
-
     def branch_input_domain(self, lb, ub):
-        lb_cycles = torch.floor((lb + 0.5 * torch.pi) / (2 * torch.pi)) * (2 * torch.pi)
-        lb_clamped = lb - lb_cycles
-        ub_cycles = torch.floor((ub + 0.5 * torch.pi) / (2 * torch.pi)) * (2 * torch.pi)
-        ub_clamped = ub - ub_cycles
+        # Map all input lower and upper bounds to the [0, 2*pi] interval.
+        lb_clamped = lb - torch.floor(lb / (2 * torch.pi)) * (2 * torch.pi)
+        ub_clamped = ub - torch.floor(ub / (2 * torch.pi)) * (2 * torch.pi)
 
-        self.sigmoid_like_mask = ub - lb <= torch.pi
-        self.sigmoid_like_mask = torch.logical_and(self.sigmoid_like_mask, torch.logical_or(
-            torch.logical_and(lb_clamped <= 0.5 * torch.pi, ub_clamped <= 0.5 * torch.pi),
-            torch.logical_and(lb_clamped >= 0.5 * torch.pi, ub_clamped >= 0.5 * torch.pi)))
+        # Mask the mapped lower and upper bounds according to whether they are in [0, 0.5*pi), [0.5*pi, pi),
+        # [pi, 1.5*pi), or [1.5*pi, 2*pi).
+        mask_lb_1 = torch.logical_and(lb_clamped >= 0, lb_clamped < torch.pi / 2)
+        mask_lb_2 = torch.logical_and(lb_clamped >= torch.pi / 2, lb_clamped < torch.pi)
+        mask_lb_3 = torch.logical_and(lb_clamped >= torch.pi, lb_clamped < 3 * torch.pi / 2)
+        mask_lb_4 = torch.logical_and(lb_clamped >= 3 * torch.pi / 2, lb_clamped < 2 * torch.pi)
+
+        mask_ub_1 = torch.logical_and(ub_clamped >= 0, ub_clamped < torch.pi / 2)
+        mask_ub_2 = torch.logical_and(ub_clamped >= torch.pi / 2, ub_clamped < torch.pi)
+        mask_ub_3 = torch.logical_and(ub_clamped >= torch.pi, ub_clamped < 3 * torch.pi / 2)
+        mask_ub_4 = torch.logical_and(ub_clamped >= 3 * torch.pi / 2, ub_clamped < 2 * torch.pi)
+
+        self.sigmoid_like_mask = torch.logical_and(
+            ub - lb <= torch.pi,
+            torch.logical_or(
+                torch.logical_and(
+                    torch.logical_or(mask_lb_2, mask_lb_3),
+                    torch.logical_or(mask_ub_2, mask_ub_3)
+                ),
+                torch.logical_and(
+                    torch.logical_or(mask_lb_1, mask_lb_4),
+                    torch.logical_or(mask_ub_1, mask_ub_4)
+                )
+            )
+        )
         self.branch_mask = torch.logical_not(self.sigmoid_like_mask)
 
-        self.mask_neg = torch.logical_and((self.d2_act_func(lb) >= 0),
-            torch.logical_and((self.d2_act_func(ub) >= 0),
-            self.sigmoid_like_mask))
-        self.mask_pos = torch.logical_and((self.d2_act_func(lb) < 0),
-            torch.logical_and((self.d2_act_func(ub) < 0),
-            self.sigmoid_like_mask))
+        self.mask_neg = torch.logical_and(torch.logical_or(mask_lb_3, mask_lb_4),
+                                          torch.logical_and(torch.logical_or(mask_ub_3, mask_ub_4),
+                                                            self.sigmoid_like_mask))
+
+        self.mask_pos = torch.logical_and(torch.logical_or(mask_lb_1, mask_lb_2),
+                                          torch.logical_and(torch.logical_or(mask_ub_1, mask_ub_2),
+                                                            self.sigmoid_like_mask))
+
         self.mask_both = torch.logical_xor(self.sigmoid_like_mask,
-            torch.logical_or(self.mask_neg, self.mask_pos))
+                                           torch.logical_or(self.mask_neg, self.mask_pos))
+
         self.convex_concave = self.d2_act_func(lb) >= 0
 
     def generate_d_lower_upper(self, lower, upper):
@@ -308,13 +328,13 @@ class BoundSin(BoundOptimizableNonLinear):
             leftmost_mask = torch.logical_and(mid < unfolded_left_lower,
                 unfolded_left_lower <= upper)
             left_range_mask = torch.logical_and(mid >= unfolded_left_lower,
-                mid <= left_lower_ends)
-            inbetween_mask = torch.logical_and(mid > left_lower_ends,
+                mid < left_lower_ends)
+            inbetween_mask = torch.logical_and(mid >= left_lower_ends,
                 mid < right_lower_ends)
-            rightmost_mask = torch.logical_and(mid > unfolded_right_lower,
+            rightmost_mask = torch.logical_and(mid >= unfolded_right_lower,
                 unfolded_right_lower >= lower)
-            right_range_mask = torch.logical_and(mid >= right_lower_ends,
-                mid <= unfolded_right_lower)
+            right_range_mask = torch.logical_and(~left_range_mask, torch.logical_and(mid >= right_lower_ends,
+                mid < unfolded_right_lower))
 
             tangent_lower = (leftmost_mask * tangent_left_lower +
                 left_range_mask * (mid - BoundSin.xl_lower_tb[1][indices_lb] - lb_cycles) +
@@ -332,13 +352,13 @@ class BoundSin(BoundOptimizableNonLinear):
             leftmost_mask = torch.logical_and(mid < unfolded_left_upper,
                 unfolded_left_upper <= upper)
             left_range_mask = torch.logical_and(mid >= unfolded_left_upper,
-                mid <= left_upper_ends)
-            inbetween_mask = torch.logical_and(mid > left_upper_ends,
+                mid < left_upper_ends)
+            inbetween_mask = torch.logical_and(mid >= left_upper_ends,
                 mid < right_upper_ends)
-            rightmost_mask = torch.logical_and(mid > unfolded_right_upper,
+            rightmost_mask = torch.logical_and(mid >= unfolded_right_upper,
                 unfolded_right_upper >= lower)
-            right_range_mask = torch.logical_and(mid >= right_upper_ends,
-                mid <= unfolded_right_upper)
+            right_range_mask = torch.logical_and(~left_range_mask, torch.logical_and(mid >= right_upper_ends,
+                mid < unfolded_right_upper))
 
             tangent_upper = (leftmost_mask * tangent_left_upper +
                 left_range_mask * (mid - BoundSin.xl_upper_tb[1][indices_lb] - lb_cycles) +

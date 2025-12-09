@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -106,21 +106,19 @@ class BoundAdd(Bound):
         model.update()
 
     def build_gradient_node(self, grad_upstream):
-        if self.inputs[0].output_shape == self.output_shape:
-            grad1 = (AddGrad(), (grad_upstream, ), [])
+        if not self.inputs[0].no_jacobian:
+            grad0_node = AddGrad(self.inputs[0].output_shape if self.inputs[0].batch_dim != -1 else
+                                 torch.Size((1,) + self.inputs[0].output_shape))
+            grad0 = (grad0_node, (grad_upstream,), [])
         else:
-            if isinstance(self.inputs[0], BoundConstant):
-                grad1 = None
-            else:
-                raise NotImplementedError('Broadcasting has not been supported')
-        if self.inputs[1].output_shape == self.output_shape:
-            grad2 = (AddGrad(), (grad_upstream, ), [])
+            grad0 = None
+        if not self.inputs[1].no_jacobian:
+            grad1_node = AddGrad(self.inputs[1].output_shape if self.inputs[1].batch_dim != -1 else
+                                 torch.Size((1,) + self.inputs[1].output_shape))
+            grad1 = (grad1_node, (grad_upstream,), [])
         else:
-            if isinstance(self.inputs[1], BoundConstant):
-                grad2 = None
-            else:
-                raise NotImplementedError('Broadcasting has not been supported')
-        return [grad1, grad2]
+            grad1 = None
+        return [grad0, grad1]
 
 
 class BoundSub(Bound):
@@ -205,18 +203,27 @@ class BoundSub(Bound):
         model.update()
 
     def build_gradient_node(self, grad_upstream):
-        if self.inputs[0].output_shape != self.inputs[1].output_shape:
-            raise NotImplementedError('Broadcasting has not been supported')
-        return [
-            (AddGrad(), (grad_upstream, ), []),
-            (AddGrad(w=-1.0), (grad_upstream, ), []),
-        ]
+        if not self.inputs[0].no_jacobian:
+            grad_node_0 = AddGrad(self.inputs[0].output_shape if self.inputs[0].batch_dim != -1 else
+                                  torch.Size((1,) + self.inputs[0].output_shape), w=1.0)
+            grad0 = (grad_node_0, (grad_upstream,), [])
+        else:
+            grad0 = None
+        if not self.inputs[1].no_jacobian:
+            grad_node_1 = AddGrad(self.inputs[1].output_shape if self.inputs[1].batch_dim != -1 else
+                                  torch.Size((1,) + self.inputs[1].output_shape), w=-1.0)
+            grad1 = (grad_node_1, (grad_upstream,), [])
+        else:
+            grad1 = None
+        return [grad0, grad1]
 
 
 class AddGrad(Module):
-    def __init__(self, w=1.0):
+    def __init__(self, input_shape, w=1.0):
         super().__init__()
+        # We need the input shape to handle broadcasting.
+        self.input_shape = input_shape
         self.w = w
 
     def forward(self, grad_last):
-        return grad_last * self.w
+        return reduce_broadcast_dims(grad_last * self.w, self.input_shape)

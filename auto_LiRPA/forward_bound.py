@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -30,11 +30,13 @@ sys.setrecursionlimit(1000000)
 
 
 def forward_general(self: 'BoundedModule', C=None, node:'Bound'=None, concretize=False,
-                    offset=0):
+                    offset=0, from_node=False):
+
     if self.dynamic:
         return self.forward_general_dynamic(C=C, node=node, concretize=concretize, offset=offset)
     if C is None:
-        if hasattr(node, 'linear'):
+        if (hasattr(node, 'linear') and
+            node.linear.lower is not None and node.linear.upper is not None):
             return node.linear.lower, node.linear.upper
         if not node.from_input:
             node.linear = LinearBound(None, node.value, None, node.value, node.value, node.value)
@@ -47,7 +49,7 @@ def forward_general(self: 'BoundedModule', C=None, node:'Bound'=None, concretize
 
     for l_pre in node.inputs:
         if not hasattr(l_pre, 'linear'):
-            self.forward_general(node=l_pre, offset=offset)
+            self.forward_general(node=l_pre, offset=offset, from_node=from_node)
     inp = [l_pre.linear for l_pre in node.inputs]
     node._start = '_forward'
     if (C is not None and isinstance(node, BoundLinear) and
@@ -61,37 +63,40 @@ def forward_general(self: 'BoundedModule', C=None, node:'Bound'=None, concretize
     lw, uw = linear.lw, linear.uw
     lower, upper = linear.lb, linear.ub
 
+    # Combine linear bounds with C matrix
     if C is not None and not C_merged:
         # FIXME use bound_forward of BoundLinear
         C_pos, C_neg = C.clamp(min=0), C.clamp(max=0)
+        # Flatten lw, uw for matrix multiplication
+        lw = lw.reshape(self.batch_size, self.dim_in, -1)
+        uw = uw.reshape(self.batch_size, self.dim_in, -1)
         _lw = torch.matmul(lw, C_pos.transpose(-1, -2)) + torch.matmul(uw, C_neg.transpose(-1, -2))
         _uw = torch.matmul(uw, C_pos.transpose(-1, -2)) + torch.matmul(lw, C_neg.transpose(-1, -2))
         lw, uw = _lw, _uw
-        _lower = torch.matmul(lower.unsqueeze(1), C_pos.transpose(-1, -2)) + \
-                    torch.matmul(upper.unsqueeze(1), C_neg.transpose(-1, -2))
-        _upper = torch.matmul(upper.unsqueeze(1), C_pos.transpose(-1, -2)) + \
-                    torch.matmul(lower.unsqueeze(1), C_neg.transpose(-1, -2))
+        # Flatten lower, upper for matrix multiplication
+        lower = lower.reshape(self.batch_size, -1)
+        upper = upper.reshape(self.batch_size, -1)
+        _lower = ( torch.matmul(lower.unsqueeze(1), C_pos.transpose(-1, -2)) 
+                    + torch.matmul(upper.unsqueeze(1), C_neg.transpose(-1, -2)) )
+        _upper = ( torch.matmul(upper.unsqueeze(1), C_pos.transpose(-1, -2))
+                    + torch.matmul(lower.unsqueeze(1), C_neg.transpose(-1, -2)) )
         lower, upper = _lower.squeeze(1), _upper.squeeze(1)
 
     logger.debug(f'Forward bounds to {node}')
 
     if concretize:
         if lw is not None or uw is not None:
-            roots = self.roots()
-            prev_dim_in = 0
-            batch_size = lw.shape[0]
-            assert (lw.ndim > 1)
-            lA = lw.reshape(batch_size, self.dim_in, -1).transpose(1, 2)
-            uA = uw.reshape(batch_size, self.dim_in, -1).transpose(1, 2)
-            for i in range(len(roots)):
-                if hasattr(roots[i], 'perturbation') and roots[i].perturbation is not None:
-                    _lA = lA[:, :, prev_dim_in : (prev_dim_in + roots[i].dim)]
-                    _uA = uA[:, :, prev_dim_in : (prev_dim_in + roots[i].dim)]
-                    lower = lower + roots[i].perturbation.concretize(
-                        roots[i].center, _lA, sign=-1, aux=roots[i].aux).view(lower.shape)
-                    upper = upper + roots[i].perturbation.concretize(
-                        roots[i].center, _uA, sign=+1, aux=roots[i].aux).view(upper.shape)
-                    prev_dim_in += roots[i].dim
+            lower, upper = self.concretize_bounds(
+                node=node,
+                lower=lower,
+                upper=upper,
+                concretize_mode='forward',
+                lw=lw,
+                uw=uw,
+                clip_neuron_selection_value=self.clip_neuron_selection_value,
+                clip_neuron_selection_type=self.clip_neuron_selection_type
+            )
+
         linear.lower, linear.upper = lower, upper
 
         if C is None:

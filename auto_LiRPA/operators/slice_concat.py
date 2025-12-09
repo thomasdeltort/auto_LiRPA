@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -115,9 +115,16 @@ class BoundConcat(Bound):
     def bound_forward(self, dim_in, *x):
         self.axis = self.make_axis_non_negative(self.axis)
         assert (self.axis == 0 and not self.from_input or self.from_input)
-        lw = torch.cat([item.lw for item in x], dim=self.axis + 1)
+        # Concatenate each input's bounds along the axis.
+        # If x[i].lw and x[i].uw is None, it means the input is a constant,
+        # so we concatenate a tensor of zeros with the corresponding shape.
+        lw = torch.cat([item.lw if item.lw is not None else
+                        torch.zeros(item.lb.shape[0], dim_in, *item.lb.shape[1:], device=item.lb.device)
+                        for item in x], dim=self.axis + 1)
         lb = torch.cat([item.lb for item in x], dim=self.axis)
-        uw = torch.cat([item.uw for item in x], dim=self.axis + 1)
+        uw = torch.cat([item.uw if item.uw is not None else
+                        torch.zeros(item.ub.shape[0], dim_in, *item.ub.shape[1:], device=item.ub.device)
+                        for item in x], dim=self.axis + 1)
         ub = torch.cat([item.ub for item in x], dim=self.axis)
         return LinearBound(lw, lb, uw, ub)
 
@@ -449,7 +456,7 @@ class BoundConcatGrad(Bound):
                          for i in range(self.input_index)])
             end = start + self.output_shape[self.axis+1]
             shape_behind = self.inputs[0].output_shape[self.axis+1:]
-            A = torch.zeros(*last_A.shape[:self.axis+2], *shape_behind)
+            A = torch.zeros(*last_A.shape[:self.axis+2], *shape_behind, device=last_A.device)
             A = A.view(-1, *shape_behind)
             A[:, start:end] = last_lA.reshape(-1, *last_A.shape[self.axis+2:])
             A = A.view(*last_A.shape[:self.axis+2], *shape_behind)

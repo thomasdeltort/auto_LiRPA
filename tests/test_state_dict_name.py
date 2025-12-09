@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from auto_LiRPA import BoundedModule
-from testcase import TestCase
-
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class FeatureExtraction(nn.Module):
     def __init__(self):
@@ -32,17 +31,17 @@ class cnn_MNIST(nn.Module):
 
 
 class TestStateDictName(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
-        super().__init__(methodName)
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
 
     def test(self):
-        model = cnn_MNIST()
+        model = cnn_MNIST().to(device=self.default_device, dtype=self.default_dtype)
         state_dict = model.state_dict()
         dummy = torch.randn((1, 1, 28, 28))
         ret1 = model(dummy)
 
         # create second model and load state_dict to test load_state_dict() whether works proper
-        model = cnn_MNIST()
+        model = cnn_MNIST().to(device=self.default_device, dtype=self.default_dtype)
         model.load_state_dict(state_dict, strict=True)
         ret2 = model(dummy)
         self.assertEqual(ret1, ret2)

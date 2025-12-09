@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -25,7 +25,6 @@ import numpy as np
 from ..perturbations import *
 from ..utils import *
 from ..patches import *
-from ..linear_bound import LinearBound
 
 torch._C._jit_set_profiling_executor(False)
 torch._C._jit_set_profiling_mode(False)
@@ -86,6 +85,8 @@ class Interval(tuple):
                 return torch.inf, 1.0
             elif isinstance(interval.ptb, PerturbationL0Norm):
                 return 0, interval.ptb.eps, interval.ptb.ratio
+            elif isinstance(interval.ptb, PerturbationLinear):
+                return torch.inf, 0.0
             else:
                 raise RuntimeError("get_perturbation() does not know how to handle {}".format(type(interval.ptb)))
         else:
@@ -132,6 +133,8 @@ class Bound(nn.Module):
         self.inputs: List['Bound'] = inputs
         self.output_index = output_index
         self.options = options
+        # Mark if this node is used in the bound computation (from the output node).
+        self.used = False
         self.forward_value = None
         self.output_shape = None
         self.from_input = False
@@ -180,6 +183,10 @@ class Bound(nn.Module):
         self._lower = None
         self._is_upper_bound_current = False
         self._upper = None
+        
+        # A list containing the output ACTIVATIONS node from this node.
+        # Please check backward_bound.py, forward_bound.py, batch_branch_and_bound.py for more info.
+        self.output_activations = None
 
     def __repr__(self, attrs=None):
         inputs = ', '.join([node.name for node in self.inputs])
@@ -420,36 +427,21 @@ class Bound(nn.Module):
         Here the "..." dimensions may be different.
         We need to make sure the two match, by adding or removing dimensions in A.
         """
-        shape = x.output_shape
-
         if isinstance(A, Tensor):
+            shape = x.output_shape
             if x.batch_dim == -1:
                 # The other operand has no batch dimension. (e.g., constants).
                 # Add batch dimension to it.
-                shape = torch.Size([A.shape[1]] + list(shape))
-                dims = []
-                cnt_sum = A.ndim - len(shape) - 1
-                for i in range(2, A.ndim): # merge the output dimensions?
-                    if cnt_sum > 0:
-                        dims.append(i)
-                        cnt_sum -= 1
-                if dims:
-                    A = torch.sum(A, dim=dims)
-            else:
-                dims = list(range(1, A.ndim - len(shape)))
-                if dims:
-                    A = torch.sum(A, dim=dims)
-            dims = []
-            for i in range(1, len(shape)):
-                # Skip the batch dimension.
-                # FIXME (05/11/2022): the following condition is not always correct.
-                # We should not rely on checking dimension is "1" or not.
-                if shape[i] == 1 and A.shape[i + 1] != 1:
-                    dims.append(i + 1)
-            if dims:
-                A = torch.sum(A, dim=dims, keepdim=True)
-            # Check the final shape - it should be compatible.
-            assert A.shape[2:] == shape[1:]  # skip the spec and batch dimension.
+                if len(shape) < len(A.shape) - 1:
+                    shape = torch.Size([1] + list(shape))
+                else:
+                    # The not-from-input operand has batch dimension.
+                    # This can happen when the user explicitly unsqueezes the batch dimension on
+                    # a constant tensor when building the computation graph.
+                    warnings.warn(f"Constant operand of node \033[96m{self}\033[0m has batch dimension. "
+                                  "Please check your model implementation. "
+                                  "Constant operands \033[93mSHOULD NOT\033[0m have batch dimension.")
+            A = reduce_broadcast_dims(A, shape)
         else:
             pass
         return A
@@ -530,9 +522,22 @@ class Bound(nn.Module):
             return NotImplementedError()
 
     def make_axis_non_negative(self, axis, shape='input'):
+        """Convert negative axis to non-negative axis.
+        Args:
+            axis (int or tuple or list): The axis to be converted.
+
+            shape (str or torch.Size): The shape of the tensor. If 'input', use self.input_shape.
+                If 'output', use self.output_shape. Otherwise, it should be a torch.Size object.
+                For example, if the tensor shape is (2, 3, 4), then axis -1 will be converted to 2.
+                For the "squeeze" operation, the shape should be the 'input' shape.
+                While for the "unsqueeze" operation, the shape should be the 'output' shape.
+
+        Returns:
+            axis (int or tuple): The non-negative axis.
+        """
         if isinstance(axis, (tuple, list)):
-            return tuple([self.make_axis_non_negative(item, shape)
-                          for item in axis])
+            return tuple(sorted([self.make_axis_non_negative(item, shape)
+                                 for item in axis]))
         if shape == 'input':
             shape = self.input_shape
         elif shape == 'output':

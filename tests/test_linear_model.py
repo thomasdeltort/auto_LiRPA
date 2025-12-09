@@ -1,9 +1,8 @@
 """Test bounds on a 1 layer linear network."""
-
 import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 n_classes = 3
 N = 10
@@ -18,13 +17,14 @@ class LinearModel(nn.Module):
         return x
 
 class TestLinearModel(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
-        super().__init__(methodName, seed=0)
-        self.original_model = LinearModel()
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, seed=0, device=device, dtype=dtype)
+        self.original_model = LinearModel().to(device=device, dtype=dtype)
 
     def compute_and_compare_bounds(self, eps, norm, IBP, method):
-        input_data = torch.randn((N, 256))
-        model = BoundedModule(self.original_model, torch.empty_like(input_data))
+        input_data = torch.randn(
+            (N, 256), device=self.default_device, dtype=self.default_dtype)
+        model = BoundedModule(self.original_model, torch.empty_like(input_data), device=self.default_device)
         ptb = PerturbationLpNorm(norm=norm, eps=eps)
         ptb_data = BoundedTensor(input_data, ptb)
         pred = model(ptb_data)

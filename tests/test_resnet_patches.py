@@ -1,19 +1,21 @@
+import sys
 import torch
 import numpy as np
 import torchvision
+import models
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-import sys
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 sys.path.append('../examples/vision')
-import models
-from testcase import TestCase
+
 
 
 class TestResnetPatches(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1234, ref_path='data/resnet_patches_test_data',
-            generate=generate)
+            seed=1234, ref_name='resnet_patches_test_data',
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         model_oris = [
@@ -21,8 +23,6 @@ class TestResnetPatches(TestCase):
             models.ResNet18(in_planes=2)
         ]
         self.result = []
-        if not self.generate:
-            self.reference = torch.load(self.ref_path)
 
         for model_ori in model_oris:
             conv_mode = 'patches' # conv_mode can be set as 'matrix' or 'patches'
@@ -34,9 +34,12 @@ class TestResnetPatches(TestCase):
             n_classes = 10
 
             image = torch.Tensor(test_data.data[:N]).reshape(N,3,32,32)
-            image = image.to(torch.float32) / 255.0
+            image = image.to(device=self.default_device,
+                             dtype=self.default_dtype) / 255.0
 
-            model = BoundedModule(model_ori, image, bound_opts={"conv_mode": conv_mode})
+            model_ori = model_ori.to(
+                device=self.default_device, dtype=self.default_dtype)
+            model = BoundedModule(model_ori, image, bound_opts={"conv_mode": conv_mode}, device=self.default_device)
 
             ptb = PerturbationLpNorm(norm = np.inf, eps = 0.03)
             image = BoundedTensor(image, ptb)

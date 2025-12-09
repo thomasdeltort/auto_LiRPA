@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -16,6 +16,7 @@
 #########################################################################
 """Nonlinear functions that are either convex or convave within the entire domain."""
 import torch
+from torch.nn import Module
 from .base import *
 from .activation_base import BoundActivation, BoundOptimizableActivation
 
@@ -173,6 +174,18 @@ class BoundReciprocal(BoundOptimizableActivation):
         alpha.data[:2] = (l + u) / 2
         return alpha
 
+    def build_gradient_node(self, grad_upstream):
+        return [(ReciprocalGrad(), (grad_upstream, self.inputs[0].forward_value), [self.inputs[0]])]
+
+
+class ReciprocalGrad(Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, g, x):
+        # partial derivative of 1/x is -1/x^2
+        return -g / torch.square(x).unsqueeze(1)
+
 
 class BoundExp(BoundOptimizableActivation):
     def __init__(self, attr=None, inputs=None, output_index=0, options=None):
@@ -305,3 +318,17 @@ class BoundExp(BoundOptimizableActivation):
         alpha = torch.empty(2, size_spec, *l.shape, device=l.device)
         alpha.data[:2] = (l + u) / 2
         return alpha
+
+    def build_gradient_node(self, grad_upstream):
+        if self.loss_fusion:
+            raise NotImplementedError('Gradient computation for exp with loss fusion is not supported.')
+        return [(ExpGrad(), (grad_upstream, self.inputs[0].forward_value), [self.inputs[0]])]
+
+
+class ExpGrad(Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, g, preact):
+        # exp'(x) = exp(x)
+        return g * torch.exp(preact).unsqueeze(1)

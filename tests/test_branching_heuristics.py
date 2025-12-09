@@ -5,9 +5,12 @@ from types import SimpleNamespace
 sys.path.insert(0, '../complete_verifier')
 
 from heuristics.base import RandomNeuronBranching
-
+from testcase import DEFAULT_DEVICE, DEFAULT_DTYPE, set_default_dtype_device
 
 def test_branching_heuristics():
+    device = DEFAULT_DEVICE
+    dtype = DEFAULT_DTYPE
+    set_default_dtype_device(dtype, device)
     import random
     import numpy as np
     seed = 123

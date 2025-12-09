@@ -1,9 +1,9 @@
 """Test bounds on a 1 layer CNN network."""
-
 import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 from test_linear_model import TestLinearModel
+from testcase import DEFAULT_DEVICE, DEFAULT_DTYPE
 
 input_dim = 8
 out_channel = 2
@@ -20,13 +20,13 @@ class LinearCNNModel(nn.Module):
         return x
 
 class TestLinearCNNModel(TestLinearModel):
-    def __init__(self, methodName='runTest', generate=False):
-        super().__init__(methodName)
-        self.original_model = LinearCNNModel()
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
+        self.original_model = LinearCNNModel().to(device=device, dtype=dtype)
 
     def compute_and_compare_bounds(self, eps, norm, IBP, method):
         input_data = torch.randn((N, 1, input_dim, input_dim))
-        model = BoundedModule(self.original_model, torch.empty_like(input_data))
+        model = BoundedModule(self.original_model, torch.empty_like(input_data), device=self.default_device)
         ptb = PerturbationLpNorm(norm=norm, eps=eps)
         ptb_data = BoundedTensor(input_data, ptb)
         pred = model(ptb_data)

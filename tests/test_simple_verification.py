@@ -5,7 +5,7 @@ import torchvision
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 from auto_LiRPA.utils import Flatten
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 # This simple model comes from https://github.com/locuslab/convex_adversarial
 def mnist_model():
@@ -22,8 +22,8 @@ def mnist_model():
     return model
 
 class TestSimpleVerification(TestCase):
-    def __init__(self, methodName='runTest'):
-        super().__init__(methodName)
+    def __init__(self, methodName='runTest', device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, device=device, dtype=dtype)
 
     def test(self):
       model = mnist_model()
@@ -31,17 +31,15 @@ class TestSimpleVerification(TestCase):
         '../examples/vision/pretrained/mnist_a_adv.pth',
         map_location=torch.device('cpu'))
       model.load_state_dict(checkpoint)
-
+      model = model.to(device=self.default_device, dtype=self.default_dtype)
       test_data = torchvision.datasets.MNIST(
         './data', train=False, download=True, transform=torchvision.transforms.ToTensor())
       N = 2
       image = test_data.data[:N].view(N,1,28,28)
-      image = image.to(torch.float32) / 255.0
-      if torch.cuda.is_available():
-          image = image.cuda()
-          model = model.cuda()
+      image = image.to(device=self.default_device,
+                       dtype=self.default_dtype) / 255.0
 
-      lirpa_model = BoundedModule(model, torch.empty_like(image), device=image.device)
+      lirpa_model = BoundedModule(model, torch.empty_like(image), device=self.default_device)
       ptb = PerturbationLpNorm(0.3)
       image = BoundedTensor(image, ptb)
 

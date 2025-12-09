@@ -1,14 +1,11 @@
 """Test max pooling."""
-
 import torch
-import os
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
+
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from auto_LiRPA.utils import Flatten
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 
 class Model(nn.Module):
@@ -45,61 +42,63 @@ class Model(nn.Module):
         return t_activation_Flatten
 
 class TestMaxPool(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path=None,
-            generate=generate)
+            seed=1, ref_name=None,
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
-        np.random.seed(123)
+        if self.default_dtype == torch.float64:
+            data_path = 'data_64/'
+        else:
+            data_path = 'data/'
 
         N = 2
 
         for kernel_size in [3,4]:
             for padding in [0,1]:
-                    for conv_padding in [0,1]:
-                        print(kernel_size, padding, kernel_size, conv_padding)
+                for conv_padding in [0,1]:
+                    print(kernel_size, padding, kernel_size, conv_padding)
 
-                        model_ori = Model(kernel_size=kernel_size, padding=padding, stride=kernel_size, conv_padding=conv_padding)
-                        if not self.generate:
-                            data = torch.load('data/maxpool_test_data_{}-{}-{}-{}'.format(kernel_size, padding, kernel_size, conv_padding))
-                            image = data['input']
-                            model_ori(image)
-                            model_ori.load_state_dict(data['model'])
-                        else:
-                            image = torch.rand([N, 1, 28, 28])
-                            model_ori(image)
+                    model_ori = Model(kernel_size=kernel_size, padding=padding, stride=kernel_size, conv_padding=conv_padding).to(
+                        device=self.default_device, dtype=self.default_dtype)
+                    if not self.generate:
+                        data = torch.load(data_path + 'maxpool_test_data_{}-{}-{}-{}'.format(kernel_size, padding, kernel_size, conv_padding), weights_only=False)
+                        image = data['input']
+                        model_ori(image)
+                        model_ori.load_state_dict(data['model'])
+                    else:
+                        image = torch.rand([N, 1, 28, 28])
+                        model_ori(image)
 
+                    if self.generate:
+                        conv_mode = "matrix"
+                    else:
+                        conv_mode = "patches"
 
-                        if self.generate:
-                            conv_mode = "matrix"
-                        else:
-                            conv_mode = "patches"
+                    model = BoundedModule(model_ori, image, device=self.default_device, bound_opts={"conv_mode": conv_mode})
+                    eps = 0.3
+                    norm = np.inf
+                    ptb = PerturbationLpNorm(norm=norm, eps=eps)
+                    image = BoundedTensor(image, ptb)
 
-                        model = BoundedModule(model_ori, image, device="cpu", bound_opts={"conv_mode": conv_mode})
-                        eps = 0.3
-                        norm = np.inf
-                        ptb = PerturbationLpNorm(norm=norm, eps=eps)
-                        image = BoundedTensor(image, ptb)
-                        pred = model(image)
+                    lb, ub = model.compute_bounds((image,))
 
-                        lb, ub = model.compute_bounds()
+                    if self.generate:
+                        torch.save(
+                            {'model': model_ori.state_dict(),
+                            'input': image,
+                            'lb': lb,
+                            'ub': ub}, data_path + 'maxpool_test_data_{}-{}-{}-{}'.format(kernel_size, padding, kernel_size, conv_padding)
+                        )
 
+                    if not self.generate:
+                        lb_ref = data['lb']
+                        ub_ref = data['ub']
 
-                        if self.generate:
-                            torch.save(
-                                {'model': model_ori.state_dict(),
-                                'input': image,
-                                'lb': lb,
-                                'ub': ub}, 'data/maxpool_test_data_{}-{}-{}-{}'.format(kernel_size, padding, kernel_size, conv_padding)
-                            )
-
-                        if not self.generate:
-                            lb_ref = data['lb']
-                            ub_ref = data['ub']
-
-                            assert torch.allclose(lb, lb_ref, 1e-4)
-                            assert torch.allclose(ub, ub_ref, 1e-4)
+                        assert torch.allclose(lb, lb_ref, 1e-4)
+                        assert torch.allclose(ub, ub_ref, 1e-4)
 
 
 if __name__ == '__main__':

@@ -4,7 +4,7 @@ from torch import nn
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 
-from testcase import TestCase
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class Model(nn.Module):
 
@@ -129,9 +129,10 @@ def recursive_allclose(a, b: dict, verbose=False, prefix=''):
 
 
 class TestUpSample(TestCase):
-    def __init__(self, methodName='runTest', generate=False, device='cpu'):
-        super().__init__(methodName, seed=1, ref_path=None, generate=generate)
-        self.device = device
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, seed=1, ref_name=None, generate=generate,
+                         device=device, dtype=dtype)
+        # self.device = device
 
     def test(self, seed=123):
         for kernel_size in [3,5]:
@@ -144,24 +145,24 @@ class TestUpSample(TestCase):
         self.set_seed(seed)
 
         print(f'kernel_size = {kernel_size}, scaling_factor = {scaling_factor}, stride = {stride}, padding = {padding}')
-        random_input = torch.randn((1,5)).to(torch.device(self.device)) * 1000.
+        random_input = torch.randn(
+            (1, 5), device=self.default_device, dtype=self.default_dtype) * 1000.
         eps = 0.3
 
         model_ori = Model(scale_factor=scaling_factor,
                           conv_kernel_size=kernel_size,
                           stride=stride,
-                          padding=padding)
+                          padding=padding).to(device=self.default_device, dtype=self.default_dtype)
 
         ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
         z1_clean = random_input.detach().clone().requires_grad_(requires_grad=True)
 
         z1 = BoundedTensor(random_input, ptb)
-        model_mat = BoundedModule(model_ori, (random_input,), device=self.device,
-                                  bound_opts={"conv_mode": "matrix"})
+        model_mat = BoundedModule(model_ori, (random_input,), device=self.default_device, bound_opts={"conv_mode": "matrix"})
         pred_of_mat = model_mat(z1)
         lb_m, ub_m, A_m = model_mat.compute_bounds(return_A=True, needed_A_dict={model_mat.output_name[0]: model_mat.input_name[0]}, )
 
-        model_pat = BoundedModule(model_ori, (random_input,), device=self.device,
+        model_pat = BoundedModule(model_ori, (random_input,), device=self.default_device,
                                   bound_opts={"conv_mode": "patches"})
         pred_of_patch = model_pat(z1)
         lb_p, ub_p, A_p = model_pat.compute_bounds(return_A=True, needed_A_dict={
@@ -174,22 +175,24 @@ class TestUpSample(TestCase):
 
 class TestReducedCGAN(TestCase):
 
-    def __init__(self, methodName='runTest', generate=False, device='cpu'):
-        super().__init__(methodName, seed=1, ref_path=None, generate=generate)
-        self.device = device
+    def __init__(self, methodName='runTest', generate=False, device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
+        super().__init__(methodName, seed=1, ref_name=None, generate=generate,
+                         device=device, dtype=dtype)
+        # self.device = device
 
     def test(self, seed=456):
         self.set_seed(seed)
-        input = torch.tensor([[0.583, -0.97, -0.97, 0.598, 0.737]]).to(torch.device(self.device))
+        input = torch.tensor([[0.583, -0.97, -0.97, 0.598, 0.737]])
         eps = 0.1
 
-        model_ori = ModelReducedCGAN()
+        model_ori = ModelReducedCGAN().to(
+            device=self.default_device, dtype=self.default_dtype)
 
         ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
         z1_clean = input.detach().clone().requires_grad_(requires_grad=True)
 
         z1 = BoundedTensor(input, ptb)
-        model_mat = BoundedModule(model_ori, (input,), device=self.device,
+        model_mat = BoundedModule(model_ori, (input,), device=self.default_device,
                                   bound_opts={"conv_mode": "matrix"})
         pred_of_mat = model_mat(z1)
 
@@ -199,7 +202,7 @@ class TestReducedCGAN(TestCase):
 
         lb_m, ub_m, A_m = model_mat.compute_bounds((z1,), return_A=True, needed_A_dict=needed_A_dict, method='crown')
 
-        model_pat = BoundedModule(model_ori, (input,), device=self.device,
+        model_pat = BoundedModule(model_ori, (input,), device=self.default_device,
                                   bound_opts={"conv_mode": "patches", "sparse_features_alpha": False})
         pred_of_patch = model_pat(z1)
         lb_p, ub_p, A_p = model_pat.compute_bounds((z1,), return_A=True, needed_A_dict=needed_A_dict, method='crown')
@@ -212,7 +215,7 @@ class TestReducedCGAN(TestCase):
 
 if __name__ == '__main__':
     # should use device = 'cpu' for GitHub CI
-    testcase = TestUpSample(generate=False, device='cpu')
+    testcase = TestUpSample(generate=False)
     testcase.test(seed=123)
 
     # """
@@ -220,7 +223,7 @@ if __name__ == '__main__':
     #     so commented it out for CI testing now
     #     required GPU memory: 1.5 GiB
     # """
-    # testhardcase = TestReducedCGAN(generate=False, device='cuda')
-    # testhardcase.test(seed=456)
+    testhardcase = TestReducedCGAN(generate=False)
+    testhardcase.test(seed=456)
 
 

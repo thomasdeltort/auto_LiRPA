@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -59,13 +59,13 @@ def build_solver_module(self: 'BoundedModule', x=None, C=None, interm_bounds=Non
 
     # create interval ranges for input and other weight parameters
     for i in range(len(roots)):
-        value = roots[i].forward()
         # if isinstance(root[i], BoundInput) and not isinstance(root[i], BoundParams):
         if type(roots[i]) is BoundInput:
             # create input vars for gurobi self.model
             if set_input:
                 inp_gurobi_vars = self._build_solver_input(roots[i])
         else:
+            value = roots[i].forward()
             # regular weights
             roots[i].solver_vars = value
 
@@ -81,6 +81,10 @@ def build_solver_module(self: 'BoundedModule', x=None, C=None, interm_bounds=Non
 def _build_solver_general(self: 'BoundedModule', node: Bound, C=None, model_type="mip",
                           solver_pkg="gurobi"):
     if not hasattr(node, 'solver_vars'):
+        if not node.perturbed:
+            # if not perturbed, just forward
+            node.solver_vars = self.get_forward_value(node)
+            return node.solver_vars
         for n in node.inputs:
             self._build_solver_general(n, C=C, model_type=model_type)
         inp = [n_pre.solver_vars for n_pre in node.inputs]
@@ -114,7 +118,6 @@ def _build_solver_input(self: 'BoundedModule', node):
     ## Do the input layer, which is a special case
     assert isinstance(node, BoundInput)
     assert node.perturbation is not None
-    assert node.perturbation.norm == float("inf")
 
     if self.solver_model is None:
         self.solver_model = grb.Model()
@@ -125,8 +128,8 @@ def _build_solver_input(self: 'BoundedModule', node):
 
     x_L = node.value - node.perturbation.eps if node.perturbation.x_L is None else node.perturbation.x_L
     x_U = node.value + node.perturbation.eps if node.perturbation.x_U is None else node.perturbation.x_U
-    x_L = x_L.squeeze(0)
-    x_U = x_U.squeeze(0)
+    x_L = x_L.min(dim=0).values
+    x_U = x_U.max(dim=0).values
 
     input_shape = x_L.shape
     name_array = [f'inp_{idx}' for idx in range(prod(input_shape))]
@@ -137,6 +140,77 @@ def _build_solver_input(self: 'BoundedModule', node):
     for idx in inp_gurobi_vars_dict:
         inp_gurobi_vars[idx] = inp_gurobi_vars_dict[idx]
     inp_gurobi_vars = inp_gurobi_vars.tolist()
+    
+    # Flatten the input solver_vars. 
+    def flatten(x):
+        if isinstance(x, list):
+            result = []
+            for item in x:
+                result.extend(flatten(item))
+            return result
+        else:
+            return [x]
+
+    # Add extra constraints for the inputs if the perturbation norm is not L_inf.
+    if node.perturbation.norm != float("inf"):
+        if isinstance(inp_gurobi_vars, (list, tuple)):
+            flat_inp_gurobi_vars = flatten(inp_gurobi_vars)
+        else:
+            flat_inp_gurobi_vars = inp_gurobi_vars
+        if hasattr(node.value[0], "flatten"):
+            flat_node_value = node.value.flatten().tolist()
+        else:
+            flat_node_value = node.value
+        assert len(flat_inp_gurobi_vars) == len(flat_node_value), "The input doesn't match the variables"
+
+        if node.perturbation.norm == 2:
+            # For L2 norm, we directly add a quadratic constraint for cplex compatibility.
+            # TODO: Compare efficiency with the second method below. If the second method is faster,
+            # we should use it for L2 norm by default (when cplex is not used).
+            print(f'setup L2 constraint for input with radius {node.perturbation.eps}.')
+            quad_expr = grb.QuadExpr()
+            for var, val in zip(flat_inp_gurobi_vars, flat_node_value):
+                quad_expr.add((var - val) * (var - val))
+
+            self.solver_model.addQConstr(
+                quad_expr <= node.perturbation.eps ** 2,
+                name="l2_perturbation"
+            )
+        else:
+            print(f'setup Lp constraint for input with radius {node.perturbation.eps}.')
+            n = len(flat_inp_gurobi_vars)
+            # Create variables to set up the lp constraint.
+            # We set input = x0 + delta where delta is under the Lp norm constraint.
+            senses = ['='] * n
+            delta_vars = self.solver_model.addVars(
+                n,
+                lb=-grb.GRB.INFINITY,
+                ub=grb.GRB.INFINITY,
+                name="delta"
+            )
+            diff = -np.array(flat_node_value)
+            vars_list = list(delta_vars.values()) + flat_inp_gurobi_vars
+            self.solver_model.update()
+            A = np.hstack([np.eye(n), -np.eye(n)])
+            # Add constraints input = x0 + delta as delta - input = -x0.
+            # Here x0 is "flat_node_value" and input is "flat_inp_gurobi_vars".
+            self.solver_model.addMConstr(A, vars_list, senses, diff)
+            # Set up the lp constraint here: \| delta \|_p <= eps.
+            lp_norm_var = self.solver_model.addVar(
+                lb=0, 
+                vtype=grb.GRB.CONTINUOUS,
+                name="lp_norm"
+            )
+            self.solver_model.addGenConstrNorm(
+                lp_norm_var,
+                delta_vars,
+                node.perturbation.norm,
+                name="lp_norm_constr"
+            )
+            self.solver_model.addConstr(
+                lp_norm_var <= node.perturbation.eps,
+                name="lp_perturbation_radius"
+            )
     
     node.solver_vars = inp_gurobi_vars
     # Save the gurobi input variables so that we can later extract primal values in input space easily.

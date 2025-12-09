@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -17,6 +17,7 @@
 """ Activation operators or other unary nonlinear operators, not including
 those placed in separate files."""
 import torch
+from torch.nn import Module
 from .base import *
 from .activation_base import BoundActivation, BoundOptimizableActivation
 from .clampmult import multiply_by_A_signs
@@ -42,6 +43,18 @@ class BoundAbs(BoundActivation):
     def forward(self, x):
         return x.abs()
 
+    def bound_relax(self, x, init=False):
+        if init:
+            self.init_linear_relaxation(x)
+        x_L = x.lower.clamp(max=0)
+        x_U = torch.max(x.upper.clamp(min=0), x_L + 1e-8)
+        # upper_k: connect (x_L, |x_L|) and (x_U, |x_U|)
+        upper_k = (x_U.abs() - x_L.abs()) / (x_U - x_L)
+        # lower_k: choose between -1 and 1 depending on which is closer to zero
+        lower_k = (x_U > -x_L).to(x_L) * 2 - 1
+        self.add_linear_relaxation(mask=None, type='upper', k=upper_k, x0=x_L)
+        self.add_linear_relaxation(mask=None, type='lower', k=lower_k, x0=0, y0=0)
+
     def bound_backward(self, last_lA, last_uA, x, **kwargs):
         x_L = x.lower.clamp(max=0)
         x_U = torch.max(x.upper.clamp(min=0), x_L + 1e-8)
@@ -51,6 +64,8 @@ class BoundAbs(BoundActivation):
         y_U = x_U.abs()
         upper_k = (y_U - y_L) / (x_U - x_L)
         upper_b = y_L - upper_k * x_L
+        # TODO: Here for the "mask_both" case lower_k = 0, but not sure if it's optimal.
+        # lower_b should just be 0?
         lower_k = (mask_neg * (-1.0) + mask_pos * 1.0)
         lower_b = (mask_neg + mask_pos) * (y_L - lower_k * x_L)
         if last_uA is not None:
@@ -194,6 +209,15 @@ class BoundSqr(BoundOptimizableActivation):
         lower = ((h_U < 0) * (h_U ** 2) + (h_L > 0) * (h_L ** 2))
         upper = torch.max(h_L ** 2, h_U ** 2)
         return lower, upper
+
+    def build_gradient_node(self, grad_upstream):
+        return [(SqrGrad(), (grad_upstream, self.inputs[0].forward_value), [self.inputs[0]])]
+
+
+class SqrGrad(Module):
+    def forward(self, grad_last, preact):
+        # (x^2)' = 2*x
+        return grad_last * 2 * preact.unsqueeze(1)
 
 
 class BoundHardTanh(BoundActivation):
@@ -414,8 +438,16 @@ class BoundMultiPiecewiseNonlinear(BoundOptimizableActivation):
         assert not self.is_input_perturbed(1)
         assert not self.is_input_perturbed(2)
 
-        weight = self.inputs[1].forward_value
-        offset = self.inputs[2].forward_value
+        weight = (
+            self.inputs[1].forward_value
+            if hasattr(self.inputs[1], 'forward_value')
+            else self.inputs[1].forward()
+        )
+        offset = (
+            self.inputs[2].forward_value
+            if hasattr(self.inputs[2], 'forward_value')
+            else self.inputs[2].forward()
+        )
 
         relu_x_lower = (x.lower.unsqueeze(-1) - offset).clamp(max=0)
         relu_x_upper = (x.upper.unsqueeze(-1) - offset).clamp(min=0)
@@ -465,5 +497,9 @@ class BoundMultiPiecewiseNonlinear(BoundOptimizableActivation):
         return alpha
 
     def get_split_mask(self, lower, upper, input_index):
-        offset = self.inputs[2].forward_value
+        offset = (
+            self.inputs[2].forward_value
+            if hasattr(self.inputs[2], 'forward_value')
+            else self.inputs[2].forward()
+        )
         return ((lower.unsqueeze(-1) < offset) & (upper.unsqueeze(-1) > offset)).any(dim=-1)

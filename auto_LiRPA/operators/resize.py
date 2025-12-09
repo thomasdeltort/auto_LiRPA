@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
-##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Team leaders:                                                     ##
+##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##   See CONTRIBUTORS for all current and past developers in the team. ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -315,16 +315,3 @@ class BoundResize(Bound):
         last_uA = _bound_oneside(last_uA)
         return [(last_lA, last_uA), (None, None), (None, None)], 0, 0
 
-
-class BoundExpand(Bound):
-    def forward(self, x, y):
-        y = y.clone()
-        assert y.ndim == 1
-        n, m = x.ndim, y.shape[0]
-        assert n <= m
-        for i in range(n):
-            if y[m - n + i] == 1:
-                y[m - n + i] = x.shape[i]
-            else:
-                assert x.shape[i] == 1 or x.shape[i] == y[m - n + i]
-        return x.expand(*list(y))

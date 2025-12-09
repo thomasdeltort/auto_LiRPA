@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
-from testcase import TestCase
-
+from testcase import TestCase, DEFAULT_DEVICE, DEFAULT_DTYPE
 
 class cnn_model(nn.Module):
     def __init__(self, layers, padding, stride, linear):
@@ -28,10 +27,12 @@ class cnn_model(nn.Module):
         return x
 
 class TestConv(TestCase):
-    def __init__(self, methodName='runTest', generate=False):
+    def __init__(self, methodName='runTest', generate=False,
+                 device=DEFAULT_DEVICE, dtype=DEFAULT_DTYPE):
         super().__init__(methodName,
-            seed=1, ref_path=None,
-            generate=generate)
+            seed=1, ref_name=None,
+            generate=generate,
+            device=device, dtype=dtype)
 
     def test(self):
         models = [1, 2, 3]
@@ -40,8 +41,8 @@ class TestConv(TestCase):
 
         N = 2
         n_classes = 10
-        image = torch.randn(N, 1, 28, 28)
-        image = image.to(torch.float32) / 255.0
+        image = torch.randn(N, 1, 28, 28, dtype=self.default_dtype, device=self.default_device)
+        image = image / 255.0
 
         for layer_num in models:
             for padding in paddings:
@@ -49,15 +50,17 @@ class TestConv(TestCase):
                     for linear in [True, False]:
                         model_ori = cnn_model(layer_num, padding, stride, linear)
                         print('Model:', model_ori)
+                        model_ori = model_ori.to(
+                            device=self.default_device, dtype=self.default_dtype)
 
-                        model = BoundedModule(model_ori, image, bound_opts={"conv_mode": "patches"})
+                        model = BoundedModule(model_ori, image, device=self.default_device, bound_opts={"conv_mode": "patches"})
                         eps = 0.3
                         ptb = PerturbationLpNorm(x_L=image-eps, x_U=image+eps)
                         image = BoundedTensor(image, ptb)
                         pred = model(image)
                         lb, ub = model.compute_bounds()
 
-                        model = BoundedModule(model_ori, image, bound_opts={"conv_mode": "matrix"})
+                        model = BoundedModule(model_ori, image, device=self.default_device, bound_opts={"conv_mode": "matrix"})
                         pred = model(image)
                         lb_ref, ub_ref = model.compute_bounds()
 
