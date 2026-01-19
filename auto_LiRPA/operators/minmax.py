@@ -4,11 +4,11 @@
 ##   by the α,β-CROWN Team                                             ##
 ##                                                                     ##
 ##   Copyright (C) 2020-2025 The α,β-CROWN Team                        ##
-##   Team leaders:                                                     ##
-##          Faculty:   Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
-##          Student:   Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
+##   Primary contacts: Huan Zhang <huan@huan-zhang.com> (UIUC)         ##
+##                     Zhouxing Shi <zshi@cs.ucla.edu> (UCLA)          ##
+##                     Xiangru Zhong <xiangru4@illinois.edu> (UIUC)    ##
 ##                                                                     ##
-##   See CONTRIBUTORS for all current and past developers in the team. ##
+##    See CONTRIBUTORS for all author contacts and affiliations.       ##
 ##                                                                     ##
 ##     This program is licensed under the BSD 3-Clause License,        ##
 ##        contained in the LICENCE file in this directory.             ##
@@ -42,7 +42,7 @@ class BoundMinMax(BoundOptimizableActivation):
         ub_y = self._cached_ub_y
 
         for v in self.alpha.values():
-            eps = torch.tensor(1e-6).to(lb_x.dtype)
+            eps = torch.tensor(1e-6).to(lb_x.dtype).to(lb_x.device)
             if self.op == 'max':
                 # Case 1: l_x >= u_y
                 case1 = (lb_x >= ub_y).requires_grad_(False).to(lb_x.dtype)
@@ -61,7 +61,7 @@ class BoundMinMax(BoundOptimizableActivation):
                 case3 = ((lb_x < ub_y) * (ub_x == ub_y)).requires_grad_(False).to(lb_x.dtype)
                 alpha_u_ub += case3
                 alpha_l_ub += case3
-
+                # import pdb; pdb.set_trace()
                 alpha_u_lb = torch.clamp(alpha_u_lb, min=eps)
                 alpha_u_ub = torch.clamp(alpha_u_ub, min=eps)
             elif self.op == 'min':
@@ -166,22 +166,22 @@ class BoundMinMax(BoundOptimizableActivation):
 
             # Case 2: l_x < u_y && u_x > u_y
             case2 = ((lb_x < ub_y) * (ub_x > ub_y)).requires_grad_(False).to(lb_x.dtype)
-            upper_dx = upper_dx + case2 * (ub_y - ub_x) / (alpha_u * (lb_x - ub_x))
-            upper_dy = upper_dy + case2 * (alpha_u - 1) * (ub_y - ub_x) / (alpha_u * (ub_y - lb_y))
-            upper_b = upper_b + case2 * (ub_x - (ub_x * (ub_y - ub_x)) / (alpha_u * (lb_x - ub_x))
+            upper_dx += case2 * (ub_y - ub_x) / (alpha_u * (lb_x - ub_x))
+            upper_dy += case2 * (alpha_u - 1) * (ub_y - ub_x) / (alpha_u * (ub_y - lb_y))
+            upper_b += case2 * (ub_x - (ub_x * (ub_y - ub_x)) / (alpha_u * (lb_x - ub_x))
                                 - ((alpha_u - 1) * (ub_y - ub_x) * lb_y) / (alpha_u * (ub_y - lb_y)))
-            lower_dx = lower_dx + case2 * (1 - alpha_l)
-            lower_dy = lower_dy + case2 * alpha_l
+            lower_dx += case2 * (1 - alpha_l)
+            lower_dy += case2 * alpha_l
 
             # Case 3: l_x < u_y && u_x == u_y
             case3 = ((lb_x < ub_y) * (ub_x == ub_y)).requires_grad_(False).to(lb_x.dtype)
-            upper_dx = upper_dx + case3 * alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) / (ub_x - lb_x)
-            upper_dy = upper_dy + case3 * alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) / (ub_y - lb_y)
-            upper_b = upper_b + case3 * (ub_x -
+            upper_dx += case3 * alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) / (ub_x - lb_x)
+            upper_dy += case3 * alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) / (ub_y - lb_y)
+            upper_b += case3 * (ub_x -
                         (alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) * lb_x) / (ub_x - lb_x) -
                         (alpha_u * (ub_x - torch.maximum(lb_x, lb_y)) * ub_y) / (ub_y - lb_y))
-            lower_dx = lower_dx + case3 * (1 - alpha_l)
-            lower_dy = lower_dy + case3 * alpha_l
+            lower_dx += case3 * (1 - alpha_l)
+            lower_dy += case3 * alpha_l
         elif self.op == 'min':
             # Case 1: l_y >= u_x
             case1 = (lb_y >= ub_x).requires_grad_(False).to(lb_x.dtype)
@@ -194,20 +194,20 @@ class BoundMinMax(BoundOptimizableActivation):
 
             # Case 2: l_y < u_x && l_y > l_x
             case2 = ((lb_y < ub_x) * (lb_y > lb_x)).requires_grad_(False).to(lb_x.dtype)
-            upper_dx = upper_dx + case2 * (1 - alpha_u)
-            upper_dy = upper_dy + case2 * alpha_u
-            lower_dx = lower_dx + case2 * (lb_x - lb_y) / (alpha_l * (lb_x - ub_x))
-            lower_dy = lower_dy + case2 * (alpha_l - 1) * (lb_x - lb_y) / (alpha_l * (ub_y - lb_y))
-            lower_b = lower_b + case2 * (lb_y - (ub_x * (lb_x - lb_y)) / (alpha_l * (lb_x - ub_x))
+            upper_dx += case2 * (1 - alpha_u)
+            upper_dy += case2 * alpha_u
+            lower_dx += case2 * (lb_x - lb_y) / (alpha_l * (lb_x - ub_x))
+            lower_dy += case2 * (alpha_l - 1) * (lb_x - lb_y) / (alpha_l * (ub_y - lb_y))
+            lower_b += case2 * (lb_y - (ub_x * (lb_x - lb_y)) / (alpha_l * (lb_x - ub_x))
                                 - ((alpha_l - 1) * (lb_x - lb_y) * lb_y) / (alpha_l * (ub_y - lb_y)))
 
             # Case 3: l_y < u_x && l_y == l_x
             case3 = ((lb_y < ub_x) * (lb_y == lb_x)).requires_grad_(False).to(lb_x.dtype)
-            upper_dx = upper_dx + case3 * (1 - alpha_u)
-            upper_dy = upper_dy + case3 * alpha_u
-            lower_dx = lower_dx + case3 * alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) / (ub_x - lb_x)
-            lower_dy = lower_dy + case3 * alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) / (ub_y - lb_y)
-            lower_b = lower_b + case3 * (lb_x -
+            upper_dx += case3 * (1 - alpha_u)
+            upper_dy += case3 * alpha_u
+            lower_dx += case3 * alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) / (ub_x - lb_x)
+            lower_dy += case3 * alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) / (ub_y - lb_y)
+            lower_b += case3 * (lb_x -
                         (alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) * lb_x) / (ub_x - lb_x) -
                         (alpha_l * (torch.minimum(ub_x, ub_y) - lb_x) * ub_y) / (ub_y - lb_y))
         else:
